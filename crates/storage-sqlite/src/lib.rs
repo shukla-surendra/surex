@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection, OptionalExtension, Row};
-use social_core::{Error, Post, PostId, Result, User, UserId, UserStats};
+use social_core::{Error, MediaRef, Post, PostId, Result, User, UserId, UserStats};
 use social_storage::{GraphStore, LikeStore, PostStore, SessionStore, Stores, UserStore};
 use std::sync::Arc;
 
@@ -19,8 +19,23 @@ PRAGMA mmap_size = 268435456;
 PRAGMA temp_store = MEMORY;
 ";
 
-/// Stored in `PRAGMA user_version`. Bump on incompatible schema changes.
-const SCHEMA_VERSION: i64 = 1;
+/// Stored in `PRAGMA user_version`. `SCHEMA` creates version 1; `MIGRATIONS[i]` moves a
+/// database from version `i + 1` to `i + 2`.
+const SCHEMA_VERSION: i64 = 1 + MIGRATIONS.len() as i64;
+
+const MIGRATIONS: &[&str] = &[
+    // 2: profiles, reply counts and the replies index.
+    "
+ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT '';
+ALTER TABLE posts ADD COLUMN reply_count INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS posts_replies ON posts(reply_to, id) WHERE reply_to IS NOT NULL AND deleted = 0;
+UPDATE posts SET reply_count =
+  (SELECT count(*) FROM posts c WHERE c.reply_to = posts.id AND c.deleted = 0);
+",
+    // 3: images attached to posts, as a JSON array of `MediaRef`.
+    "ALTER TABLE posts ADD COLUMN media TEXT NOT NULL DEFAULT '[]';",
+];
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS users(
@@ -69,13 +84,22 @@ impl SqliteStore {
         let has_tables: bool = setup
             .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table')", [], |r| r.get(0))
             .map_err(sql)?;
-        if version != SCHEMA_VERSION && (version != 0 || has_tables) {
+        if version > SCHEMA_VERSION || (version == 0 && has_tables) {
             return Err(Error::Internal(format!(
-                "{path} has schema version {version}, expected {SCHEMA_VERSION}; use a new --db path"
+                "{path} has schema version {version}, expected at most {SCHEMA_VERSION}; use a new --db path"
             )));
         }
-        setup.execute_batch(SCHEMA).map_err(sql)?;
-        setup.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(sql)?;
+        let mut version = version;
+        if version == 0 {
+            setup.execute_batch(SCHEMA).map_err(sql)?;
+            version = 1;
+        }
+        for (i, migration) in MIGRATIONS.iter().enumerate().skip(version as usize - 1) {
+            let tx = setup.unchecked_transaction().map_err(sql)?;
+            tx.execute_batch(migration).map_err(sql)?;
+            tx.pragma_update(None, "user_version", i as i64 + 2).map_err(sql)?;
+            tx.commit().map_err(sql)?;
+        }
         drop(setup);
 
         let mgr = SqliteConnectionManager::file(path).with_init(|c| c.execute_batch(PRAGMAS));
@@ -123,8 +147,27 @@ fn id_list(ids: impl IntoIterator<Item = i64>) -> String {
     s
 }
 
+/// Columns: `id, username, created_at, display_name, bio`.
+const USER_COLS: &str = "id, username, created_at, display_name, bio";
+
 fn user_row(r: &Row) -> rusqlite::Result<User> {
-    Ok(User { id: UserId(r.get(0)?), username: r.get(1)?, created_at: r.get(2)? })
+    Ok(User {
+        id: UserId(r.get(0)?),
+        username: r.get(1)?,
+        created_at: r.get(2)?,
+        display_name: r.get(3)?,
+        bio: r.get(4)?,
+    })
+}
+
+fn media_json(media: &[MediaRef]) -> String {
+    serde_json::to_string(media).expect("media refs serialize")
+}
+
+fn media_col(r: &Row, idx: usize) -> rusqlite::Result<Vec<MediaRef>> {
+    let raw: String = r.get(idx)?;
+    serde_json::from_str(&raw)
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(idx, rusqlite::types::Type::Text, Box::new(e)))
 }
 
 fn post_row(r: &Row) -> rusqlite::Result<Post> {
@@ -136,6 +179,8 @@ fn post_row(r: &Row) -> rusqlite::Result<Post> {
         created_at: r.get(4)?,
         like_count: r.get(5)?,
         deleted: r.get(6)?,
+        reply_count: r.get(7)?,
+        media: media_col(r, 8)?,
     })
 }
 
@@ -149,8 +194,11 @@ impl UserStore for SqliteStore {
         let (u, hash) = (user.clone(), pass_hash.to_owned());
         let inserted = self
             .run(move |c| {
-                c.prepare_cached("INSERT OR IGNORE INTO users(id, username, pass, created_at) VALUES (?1, ?2, ?3, ?4)")?
-                    .execute(params![u.id.0, u.username, hash, u.created_at])
+                c.prepare_cached(
+                    "INSERT OR IGNORE INTO users(id, username, pass, created_at, display_name, bio)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )?
+                .execute(params![u.id.0, u.username, hash, u.created_at, u.display_name, u.bio])
             })
             .await?;
         if inserted == 0 {
@@ -161,7 +209,7 @@ impl UserStore for SqliteStore {
 
     async fn user_by_id(&self, id: UserId) -> Result<Option<User>> {
         self.run(move |c| {
-            c.prepare_cached("SELECT id, username, created_at FROM users WHERE id = ?1")?
+            c.prepare_cached(&format!("SELECT {USER_COLS} FROM users WHERE id = ?1"))?
                 .query_row([id.0], user_row)
                 .optional()
         })
@@ -171,7 +219,7 @@ impl UserStore for SqliteStore {
     async fn user_by_name(&self, username: &str) -> Result<Option<User>> {
         let name = username.to_owned();
         self.run(move |c| {
-            c.prepare_cached("SELECT id, username, created_at FROM users WHERE username = ?1")?
+            c.prepare_cached(&format!("SELECT {USER_COLS} FROM users WHERE username = ?1"))?
                 .query_row([name], user_row)
                 .optional()
         })
@@ -181,8 +229,8 @@ impl UserStore for SqliteStore {
     async fn credentials(&self, username: &str) -> Result<Option<(User, String)>> {
         let name = username.to_owned();
         self.run(move |c| {
-            c.prepare_cached("SELECT id, username, created_at, pass FROM users WHERE username = ?1")?
-                .query_row([name], |r| Ok((user_row(r)?, r.get(3)?)))
+            c.prepare_cached(&format!("SELECT {USER_COLS}, pass FROM users WHERE username = ?1"))?
+                .query_row([name], |r| Ok((user_row(r)?, r.get(5)?)))
                 .optional()
         })
         .await
@@ -194,7 +242,7 @@ impl UserStore for SqliteStore {
         }
         let list = id_list(ids.iter().map(|u| u.0));
         self.run(move |c| {
-            c.prepare_cached("SELECT id, username, created_at FROM users WHERE id IN (SELECT value FROM json_each(?1))")?
+            c.prepare_cached(&format!("SELECT {USER_COLS} FROM users WHERE id IN (SELECT value FROM json_each(?1))"))?
                 .query_map([list], user_row)?
                 .collect()
         })
@@ -209,6 +257,16 @@ impl UserStore for SqliteStore {
         })
         .await?
         .ok_or(Error::NotFound("user"))
+    }
+
+    async fn update_profile(&self, user: &User) -> Result<()> {
+        let u = user.clone();
+        self.run(move |c| {
+            c.prepare_cached("UPDATE users SET display_name = ?2, bio = ?3 WHERE id = ?1")?
+                .execute(params![u.id.0, u.display_name, u.bio])
+        })
+        .await?;
+        Ok(())
     }
 }
 
@@ -253,10 +311,13 @@ impl PostStore for SqliteStore {
         self.run(move |c| {
             let tx = c.transaction()?;
             tx.prepare_cached(
-                "INSERT INTO posts(id, author_id, body, reply_to, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO posts(id, author_id, body, reply_to, created_at, media) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?
-            .execute(params![p.id.0, p.author_id.0, p.body, p.reply_to.map(|r| r.0), p.created_at])?;
+            .execute(params![p.id.0, p.author_id.0, p.body, p.reply_to.map(|r| r.0), p.created_at, media_json(&p.media)])?;
             tx.prepare_cached("UPDATE users SET posts = posts + 1 WHERE id = ?1")?.execute([p.author_id.0])?;
+            if let Some(parent) = p.reply_to {
+                tx.prepare_cached("UPDATE posts SET reply_count = reply_count + 1 WHERE id = ?1")?.execute([parent.0])?;
+            }
             tx.commit()
         })
         .await
@@ -269,7 +330,7 @@ impl PostStore for SqliteStore {
         let list = id_list(ids.iter().map(|p| p.0));
         self.run(move |c| {
             c.prepare_cached(
-                "SELECT id, author_id, body, reply_to, created_at, like_count, deleted
+                "SELECT id, author_id, body, reply_to, created_at, like_count, deleted, reply_count, media
                  FROM posts WHERE id IN (SELECT value FROM json_each(?1))",
             )?
             .query_map([list], post_row)?
@@ -282,10 +343,15 @@ impl PostStore for SqliteStore {
         self.run(move |c| {
             let tx = c.transaction()?;
             let n = tx
-                .prepare_cached("UPDATE posts SET deleted = 1, body = '' WHERE id = ?1 AND author_id = ?2 AND deleted = 0")?
+                .prepare_cached("UPDATE posts SET deleted = 1, body = '', media = '[]' WHERE id = ?1 AND author_id = ?2 AND deleted = 0")?
                 .execute(params![id.0, author.0])?;
             if n == 1 {
                 tx.prepare_cached("UPDATE users SET posts = posts - 1 WHERE id = ?1")?.execute([author.0])?;
+                tx.prepare_cached(
+                    "UPDATE posts SET reply_count = max(0, reply_count - 1)
+                     WHERE id = (SELECT reply_to FROM posts WHERE id = ?1)",
+                )?
+                .execute([id.0])?;
             }
             tx.commit()?;
             Ok(n == 1)
@@ -315,6 +381,18 @@ impl PostStore for SqliteStore {
             c.prepare_cached("SELECT id FROM posts WHERE deleted = 0 AND id < ?1 ORDER BY id DESC LIMIT ?2")?
                 .query_map(params![cursor(before), limit as i64], |r| r.get(0).map(PostId))?
                 .collect()
+        })
+        .await
+    }
+
+    async fn replies(&self, parent: PostId, after: Option<PostId>, limit: usize) -> Result<Vec<PostId>> {
+        let after = after.map_or(i64::MIN, |p| p.0);
+        self.run(move |c| {
+            c.prepare_cached(
+                "SELECT id FROM posts WHERE reply_to = ?1 AND deleted = 0 AND id > ?2 ORDER BY id LIMIT ?3",
+            )?
+            .query_map(params![parent.0, after, limit as i64], |r| r.get(0).map(PostId))?
+            .collect()
         })
         .await
     }
@@ -382,6 +460,18 @@ impl GraphStore for SqliteStore {
             c.prepare_cached("SELECT followee FROM follows WHERE follower = ?1 LIMIT ?2")?
                 .query_map(params![user.0, limit as i64], |r| r.get(0).map(UserId))?
                 .collect()
+        })
+        .await
+    }
+
+    async fn following_page(&self, user: UserId, after: Option<UserId>, limit: usize) -> Result<Vec<UserId>> {
+        let after = after.map_or(i64::MIN, |u| u.0);
+        self.run(move |c| {
+            c.prepare_cached(
+                "SELECT followee FROM follows WHERE follower = ?1 AND followee > ?2 ORDER BY followee LIMIT ?3",
+            )?
+            .query_map(params![user.0, after, limit as i64], |r| r.get(0).map(UserId))?
+            .collect()
         })
         .await
     }

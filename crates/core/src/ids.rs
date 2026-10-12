@@ -41,6 +41,7 @@ macro_rules! id_type {
 
 id_type!(UserId);
 id_type!(PostId);
+id_type!(MediaId);
 
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).expect("clock before 1970").as_millis() as u64

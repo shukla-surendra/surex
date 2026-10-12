@@ -129,16 +129,22 @@ UUID, and appears in server logs.
 ### 4.4 Objects
 
 ```jsonc
-// User
-{ "id": "string", "username": "alice", "created_at": 1791736976000 }
+// User (display_name and bio are "" when unset)
+{ "id": "string", "username": "alice", "created_at": 1791736976000,
+  "display_name": "Alice A.", "bio": "Builds things." }
 
 // Profile = User + counts
 { "id": "…", "username": "alice", "created_at": 0,
   "followers": 10, "following": 3, "posts": 42, "followed_by_me": false }
 
-// Post
+// Post (replying_to is the parent author's username, for replies)
 { "id": "…", "author": User, "body": "hello", "reply_to": "…|null",
-  "created_at": 0, "like_count": 3, "liked": false }
+  "replying_to": "bob|null", "created_at": 0, "like_count": 3, "reply_count": 2,
+  "liked": false, "media": [Media] }
+
+// Media (an image; url serves the bytes)
+{ "id": "…", "url": "/api/v1/media/…", "content_type": "image/png",
+  "width": 960, "height": 640, "alt": "A red tomato" }
 ```
 
 ### 4.5 Endpoints
@@ -149,10 +155,14 @@ UUID, and appears in server logs.
 | `POST /auth/login` | — | `{username, password}` | `200` User + `Set-Cookie` |
 | `POST /auth/logout` | — | — | `204`, cookie cleared, session revoked |
 | `GET /me` | 🔒 | — | `200` User |
+| `PATCH /me` | 🔒 | `{display_name, bio}` (≤ 50 / ≤ 160 chars; `""` clears) | `200` User |
 | `GET /timeline/home` | 🔒 | `?before&limit` | `200` Page<Post> |
 | `GET /timeline/global` | 👁 | `?before&limit` | `200` Page<Post> |
-| `POST /posts` | 🔒 | `{body, reply_to?}` | `201` Post |
+| `POST /media` | 🔒 | raw image bytes (PNG, JPEG, GIF or WebP; ≤ 5 MB; ≤ 8000 px a side) | `201` Media (`alt` empty) |
+| `GET /media/{id}` | — | — | `200` image bytes, cacheable forever |
+| `POST /posts` | 🔒 | `{body, reply_to?, media?: [{id, alt}]}` (≤ 4 own images; `body` may be empty with images) | `201` Post |
 | `GET /posts/{id}` | 👁 | — | `200` Post |
+| `GET /posts/{id}/replies` | 👁 | `?after&limit` | `200` Page<Post>, oldest first |
 | `DELETE /posts/{id}` | 🔒 author | — | `204` |
 | `PUT /posts/{id}/like` | 🔒 | — | `204` (idempotent) |
 | `DELETE /posts/{id}/like` | 🔒 | — | `204` (idempotent) |
@@ -160,6 +170,11 @@ UUID, and appears in server logs.
 | `GET /users/{username}/posts` | 👁 | `?before&limit` | `200` Page<Post> |
 | `PUT /users/{username}/follow` | 🔒 | — | `204` (idempotent) |
 | `DELETE /users/{username}/follow` | 🔒 | — | `204` (idempotent) |
+| `GET /users/{username}/followers` | — | `?after&limit` | `200` Page<User>, ascending id |
+| `GET /users/{username}/following` | — | `?after&limit` | `200` Page<User>, ascending id |
+
+Timelines page backwards with `before`; replies and user lists page forwards with
+`after`. In both cases pass the previous page's `next` value.
 
 Operational endpoint (outside `/api/v1`): `GET /healthz` (`200 ok`). The web client is
 a separate React app (`frontend/`) served from the same origin, which proxies `/api`
@@ -268,6 +283,7 @@ Partition key at cluster scale: `author_id` / `follower` / `post_id` respectivel
 | `--bus` | — | `inproc` | Event bus (`redpanda` planned). `inproc` requires `--roles=all` |
 | `--db` | `SOCIAL_DB` | `social.db` | SQLite path |
 | `--db-pool` | — | `16` | SQLite connection pool size |
+| `--media-dir` | `SOCIAL_MEDIA_DIR` | `media` | Directory for uploaded images |
 | `--scylla-nodes` | `SOCIAL_SCYLLA_NODES` | `127.0.0.1:9042` | Scylla contact points, comma-separated |
 | `--scylla-keyspace` | `SOCIAL_SCYLLA_KEYSPACE` | `social` | Keyspace; created with all tables on first start |
 | `--scylla-rf` | `SOCIAL_SCYLLA_RF` | `1` | Replication factor, used only when the keyspace is created (3 in production) |
@@ -279,7 +295,7 @@ Partition key at cluster scale: `author_id` / `follower` / `post_id` respectivel
 | `--cache-users` | — | `200000` | Max cached timelines (TinyLFU eviction) |
 | `--secure-cookies` | — | off | Add `Secure` to the session cookie (enable behind TLS) |
 | `--trust-proxy` | `SOCIAL_TRUST_PROXY` | off | Use `X-Forwarded-For` for the client IP |
-| `--no-rate-limit` | — | off | Disable per-IP limits (benchmarks, or limits enforced at the edge) |
+| `--no-rate-limit` | `SOCIAL_NO_RATE_LIMIT` | off | Disable per-IP limits (benchmarks, or limits enforced at the edge) |
 | `--log-json` | — | off | JSON logs |
 | `RUST_LOG` | env | `info` | Log filter |
 
@@ -293,6 +309,10 @@ Partition key at cluster scale: `author_id` / `follower` / `post_id` respectivel
 - The global timeline reads storage directly. At scale it becomes a cached, sampled
   stream.
 - Rate limits are per-node.
+- Images live on the server's local disk (`--media-dir`), so only one app node can
+  serve them. Images of deleted posts, and uploads never attached to a post, are not
+  garbage-collected yet. Object storage (S3/MinIO) behind a CDN replaces this at
+  cluster scale.
 - ScyllaDB backend:
   - Multi-table writes (a follow, a like, a post plus its counters) are not atomic
     across tables. A crash between statements can leave a counter off by one, or an

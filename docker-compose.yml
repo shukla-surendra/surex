@@ -32,7 +32,11 @@ services:
       SOCIAL_WORKER_ID: "0"
       # Requests arrive through the frontend's nginx; take the client IP from it.
       SOCIAL_TRUST_PROXY: "true"
+      # Set to true to bulk-load fixtures quickly: SOCIAL_NO_RATE_LIMIT=true docker compose up -d social
+      SOCIAL_NO_RATE_LIMIT: ${SOCIAL_NO_RATE_LIMIT:-false}
       RUST_LOG: info
+    volumes:
+      - media-data:/var/lib/social/media # uploaded images
     ports:
       - "127.0.0.1:3000:3000" # direct API access for debugging
     restart: on-failure
@@ -48,3 +52,4 @@ services:
 
 volumes:
   scylla-data:
+  media-data:

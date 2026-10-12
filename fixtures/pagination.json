@@ -1,0 +1,165 @@
+{
+  "password": "surex-demo-123",
+  "about": "Bulk data so every paged view has more than one page (page size is 30). Builds on demo.json: load that first. The whole bulk set is skipped if its marker user already exists.",
+  "bulk": {
+    "marker": "crowd_01",
+    "crowd": {
+      "prefix": "crowd_",
+      "count": 36,
+      "follow": [
+        "ada_codes"
+      ],
+      "first_names": [
+        "Aiko",
+        "Bruno",
+        "Chloe",
+        "Dev",
+        "Elif",
+        "Femi",
+        "Greta",
+        "Hugo",
+        "Ines",
+        "Jonas",
+        "Kira",
+        "Luca"
+      ],
+      "last_initials": [
+        "A.",
+        "B.",
+        "C."
+      ],
+      "bios": [
+        "Here for the short posts.",
+        "Weekend cyclist, weekday spreadsheet wrangler.",
+        "Collecting good playlists and better coffee.",
+        "",
+        "Learning to code, one bug at a time.",
+        "Amateur astronomer. Clear skies, please."
+      ]
+    },
+    "posts": [
+      {
+        "author": "ada_codes",
+        "count": 35,
+        "templates": [
+          "Debugging note #{n}: the bug was {thing}. It is always {thing}. #rustlang",
+          "Today's small win (#{n}): {win}.",
+          "Reading {topic} docs again (round {n}). They get better every time.",
+          "Pairing session #{n} taught me something about {topic}. Writing it down before I forget."
+        ],
+        "words": {
+          "thing": [
+            "a stale cache",
+            "an off-by-one",
+            "a timezone",
+            "DNS",
+            "a missing index",
+            "an unbounded queue"
+          ],
+          "win": [
+            "deleted 200 lines of code",
+            "a flaky test is finally stable",
+            "p99 latency halved",
+            "the build is 30% faster"
+          ],
+          "topic": [
+            "Scylla",
+            "Tokio",
+            "axum",
+            "SQLite",
+            "tracing",
+            "Raft"
+          ]
+        },
+        "images": {
+          "every": 6,
+          "files": [
+            "images/pattern-ember.png",
+            "images/pattern-ink.png",
+            "images/pattern-moss.png",
+            "images/pattern-dusk.png"
+          ],
+          "alt": "Abstract colour study {n}."
+        }
+      },
+      {
+        "author": "kai_ships",
+        "count": 20,
+        "templates": [
+          "Design crit #{n}: {advice}.",
+          "Prototype {n} is live. The feedback so far: {feedback}."
+        ],
+        "words": {
+          "advice": [
+            "fewer options, better defaults",
+            "label the button with the outcome",
+            "make the empty state helpful",
+            "cut the modal"
+          ],
+          "feedback": [
+            "'oh, that's obvious now'",
+            "'can it be faster?'",
+            "'where did the settings go?' (on purpose)",
+            "mostly smiles"
+          ]
+        }
+      },
+      {
+        "author": "sana_runs",
+        "count": 20,
+        "templates": [
+          "Run log {n}: {km} km, {feel}. #trailrunning",
+          "Chart of the day #{n}: {chart}."
+        ],
+        "words": {
+          "km": [
+            "5",
+            "8",
+            "12",
+            "16",
+            "21"
+          ],
+          "feel": [
+            "legs felt great",
+            "headwind the whole way",
+            "new personal best on the climb",
+            "slow and happy"
+          ],
+          "chart": [
+            "a slope graph beats two bar charts",
+            "label the lines directly",
+            "start the axis at zero for bars",
+            "small multiples win again"
+          ]
+        },
+        "images": {
+          "every": 10,
+          "offset": 5,
+          "files": [
+            "images/ridge-sunrise.png"
+          ],
+          "alt": "A photo from the trail on run {n}."
+        }
+      }
+    ],
+    "thread": {
+      "author": "kai_ships",
+      "starts_with": "Design rule",
+      "count": 40,
+      "templates": [
+        "Reply {n}: {take}",
+        "{take} (reply {n})"
+      ],
+      "words": {
+        "take": [
+          "Totally agree, empty states are onboarding.",
+          "Bonus points if the empty state has one clear next step.",
+          "We A/B tested this once. The kind version won by a mile.",
+          "Error states deserve the same care.",
+          "Adding this to our design checklist.",
+          "Counterpoint: sometimes the best empty state is no screen at all."
+        ]
+      }
+    }
+  }
+}

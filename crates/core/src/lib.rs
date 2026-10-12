@@ -9,5 +9,5 @@ pub mod validate;
 
 pub use error::{Error, Result};
 pub use event::Event;
-pub use ids::{id_timestamp_ms, now_ms, IdGen, PostId, UserId, EPOCH_MS};
-pub use model::{Post, User, UserStats};
+pub use ids::{id_timestamp_ms, now_ms, IdGen, MediaId, PostId, UserId, EPOCH_MS};
+pub use model::{MediaMeta, MediaRef, Post, User, UserStats};

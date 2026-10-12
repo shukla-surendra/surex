@@ -3,7 +3,7 @@
 //! wide-column store (ScyllaDB) as well as onto SQLite.
 
 use async_trait::async_trait;
-use social_core::{Post, PostId, Result, User, UserId, UserStats};
+use social_core::{MediaId, MediaMeta, Post, PostId, Result, User, UserId, UserStats};
 use std::sync::Arc;
 
 #[async_trait]
@@ -17,6 +17,9 @@ pub trait UserStore: Send + Sync {
     /// Missing ids are skipped; order is unspecified.
     async fn users_by_ids(&self, ids: &[UserId]) -> Result<Vec<User>>;
     async fn stats(&self, id: UserId) -> Result<UserStats>;
+    /// Overwrites `display_name` and `bio` for `user.id` (`user.username` locates
+    /// name-keyed copies).
+    async fn update_profile(&self, user: &User) -> Result<()>;
 }
 
 #[async_trait]
@@ -29,6 +32,7 @@ pub trait SessionStore: Send + Sync {
 
 #[async_trait]
 pub trait PostStore: Send + Sync {
+    /// Also indexes the post under its parent and bumps the parent's reply count.
     async fn insert(&self, post: &Post) -> Result<()>;
     /// Includes tombstoned posts (`deleted = true`); missing ids are skipped.
     async fn get_many(&self, ids: &[PostId]) -> Result<Vec<Post>>;
@@ -38,6 +42,8 @@ pub trait PostStore: Send + Sync {
     async fn by_authors(&self, authors: &[UserId], before: Option<PostId>, limit: usize) -> Result<Vec<PostId>>;
     /// Newest-first ids of all live posts, older than `before`.
     async fn recent(&self, before: Option<PostId>, limit: usize) -> Result<Vec<PostId>>;
+    /// Oldest-first ids of live replies to `parent`, newer than `after`.
+    async fn replies(&self, parent: PostId, after: Option<PostId>, limit: usize) -> Result<Vec<PostId>>;
     async fn apply_like_deltas(&self, deltas: &[(PostId, i64)]) -> Result<()>;
 }
 
@@ -49,6 +55,8 @@ pub trait GraphStore: Send + Sync {
     async fn unfollow(&self, follower: UserId, followee: UserId) -> Result<bool>;
     async fn is_following(&self, follower: UserId, followee: UserId) -> Result<bool>;
     async fn following(&self, user: UserId, limit: usize) -> Result<Vec<UserId>>;
+    /// Followees in ascending id order, strictly after `after`.
+    async fn following_page(&self, user: UserId, after: Option<UserId>, limit: usize) -> Result<Vec<UserId>>;
     /// Followers in ascending id order, strictly after `after`.
     async fn followers_page(&self, user: UserId, after: Option<UserId>, limit: usize) -> Result<Vec<UserId>>;
     /// Accounts `user` follows that have at least `min_followers` followers.
@@ -63,6 +71,16 @@ pub trait LikeStore: Send + Sync {
     async fn unlike(&self, user: UserId, post: PostId) -> Result<bool>;
     /// The subset of `posts` that `user` has liked.
     async fn liked_among(&self, user: UserId, posts: &[PostId]) -> Result<Vec<PostId>>;
+}
+
+/// Uploaded image bytes plus their metadata. A local directory today; S3/MinIO behind a
+/// CDN at cluster scale (docs/ARCHITECTURE.md §3).
+#[async_trait]
+pub trait MediaStore: Send + Sync {
+    /// Stores bytes and metadata under `meta.id`; ids are never reused.
+    async fn put(&self, meta: &MediaMeta, data: &[u8]) -> Result<()>;
+    async fn meta(&self, id: MediaId) -> Result<Option<MediaMeta>>;
+    async fn get(&self, id: MediaId) -> Result<Option<(MediaMeta, Vec<u8>)>>;
 }
 
 /// The full set of stores. Backends may differ per store (e.g. sessions in Dragonfly).

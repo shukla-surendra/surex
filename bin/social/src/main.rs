@@ -6,6 +6,7 @@ use social_core::now_ms;
 use social_events::{EventBus, InProcBus};
 use social_gateway::{GatewayConfig, Limits};
 use social_services::{spawn_workers, App, Config, WorkerSet};
+use social_storage_fs::FsMediaStore;
 use social_storage_scylla::{ScyllaConfig, ScyllaStore};
 use social_storage_sqlite::SqliteStore;
 use std::net::SocketAddr;
@@ -32,6 +33,9 @@ struct Args {
     db: String,
     #[arg(long, default_value_t = 16)]
     db_pool: u32,
+    /// Directory for uploaded images.
+    #[arg(long, env = "SOCIAL_MEDIA_DIR", default_value = "media")]
+    media_dir: String,
     /// Scylla contact points (`host:port`, comma-separated).
     #[arg(long, env = "SOCIAL_SCYLLA_NODES", value_delimiter = ',', default_value = "127.0.0.1:9042")]
     scylla_nodes: Vec<String>,
@@ -58,8 +62,8 @@ struct Args {
     secure_cookies: bool,
     #[arg(long, env = "SOCIAL_TRUST_PROXY")]
     trust_proxy: bool,
-    /// Disable per-IP rate limiting (benchmarks, or when the edge enforces limits).
-    #[arg(long)]
+    /// Disable per-IP rate limiting (benchmarks, seeding, or when the edge enforces limits).
+    #[arg(long, env = "SOCIAL_NO_RATE_LIMIT")]
     no_rate_limit: bool,
     #[arg(long)]
     log_json: bool,
@@ -118,6 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ScyllaStore::open(&cfg).await?.into_stores()
         }
     };
+    let media = Arc::new(FsMediaStore::open(&args.media_dir)?);
     let cache: Arc<dyn TimelineCache> = match args.cache {
         CacheKind::Inproc => Arc::new(InProcTimelineCache::new(args.cache_users, args.timeline_cap)),
     };
@@ -130,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker_id: args.worker_id,
         ..Config::default()
     };
-    let app = App::new(stores, cache, bus.clone(), cfg)?;
+    let app = App::new(stores, media, cache, bus.clone(), cfg)?;
     let worker_handles = spawn_workers(&app, workers);
     let purge = tokio::spawn(purge_sessions(app.clone()));
 

@@ -1,0 +1,189 @@
+{
+  "password": "surex-demo-123",
+  "about": "Posts with images in every layout (1-4 images, image-only, a reply with an image). Loads after demo.json; skipped once the first post below exists.",
+  "once": {
+    "author": "leo_draws",
+    "starts_with": "Sketchbook dump"
+  },
+  "posts": [
+    {
+      "key": "g1",
+      "author": "leo_draws",
+      "body": "Sketchbook dump from this week: four little colour studies. #illustration",
+      "images": [
+        {
+          "file": "images/pattern-ember.png",
+          "alt": "Abstract study of terracotta, amber and black shapes on cream."
+        },
+        {
+          "file": "images/pattern-moss.png",
+          "alt": "Abstract study of overlapping green and gold circles and squares."
+        },
+        {
+          "file": "images/pattern-dusk.png",
+          "alt": "Abstract study of pale shapes and wavy lines on a deep purple gradient."
+        },
+        {
+          "file": "images/pattern-ink.png",
+          "alt": "Abstract study of indigo, plum and black shapes on off-white paper."
+        }
+      ]
+    },
+    {
+      "key": "g2",
+      "author": "omar_cooks",
+      "body": "This week's kitchen, in three acts.",
+      "images": [
+        {
+          "file": "images/lentil-soup.png",
+          "alt": "A bowl of orange lentil soup with herbs and lemon."
+        },
+        {
+          "file": "images/sourdough-starter.png",
+          "alt": "A jar of bubbly sourdough starter."
+        },
+        {
+          "file": "images/tomato.png",
+          "alt": "A single ripe tomato."
+        }
+      ]
+    },
+    {
+      "key": "g3",
+      "author": "kai_ships",
+      "body": "Two directions for the new onboarding screen. Left or right?",
+      "images": [
+        {
+          "file": "images/pattern-moss.png",
+          "alt": "Option A: calm greens and gold."
+        },
+        {
+          "file": "images/pattern-ember.png",
+          "alt": "Option B: warm terracotta and amber."
+        }
+      ]
+    },
+    {
+      "key": "g4",
+      "author": "zoe_plants",
+      "body": "",
+      "images": [
+        {
+          "file": "images/basil.png",
+          "alt": "The basil plant, now noticeably bushier."
+        }
+      ]
+    },
+    {
+      "key": "g5",
+      "author": "ada_codes",
+      "body": "Before/after from today's deploy. Not bad for a Tuesday.",
+      "images": [
+        {
+          "file": "images/latency-chart.png",
+          "alt": "Latency chart dropping sharply after the deploy."
+        }
+      ]
+    },
+    {
+      "key": "g6",
+      "author": "mira_reads",
+      "reply_to": "g2",
+      "body": "@omar_cooks reading cookbooks counts as cooking, right?",
+      "images": [
+        {
+          "file": "images/book-stack.png",
+          "alt": "A tall stack of colourful books."
+        }
+      ]
+    },
+    {
+      "key": "g7",
+      "author": "sana_runs",
+      "reply_to": "g3",
+      "body": "Right. Warm colours make me want to click things.",
+      "images": []
+    },
+    {
+      "key": "g8",
+      "author": "sana_runs",
+      "body": "Same trail, new season.",
+      "images": [
+        {
+          "file": "images/ridge-sunrise.png",
+          "alt": "Sunrise over layered purple ridges with a trail along the nearest one."
+        }
+      ]
+    }
+  ],
+  "likes": [
+    [
+      "kai_ships",
+      "g1"
+    ],
+    [
+      "zoe_plants",
+      "g1"
+    ],
+    [
+      "mira_reads",
+      "g1"
+    ],
+    [
+      "ada_codes",
+      "g1"
+    ],
+    [
+      "sana_runs",
+      "g2"
+    ],
+    [
+      "zoe_plants",
+      "g2"
+    ],
+    [
+      "leo_draws",
+      "g2"
+    ],
+    [
+      "ada_codes",
+      "g3"
+    ],
+    [
+      "leo_draws",
+      "g3"
+    ],
+    [
+      "omar_cooks",
+      "g4"
+    ],
+    [
+      "leo_draws",
+      "g4"
+    ],
+    [
+      "sana_runs",
+      "g4"
+    ],
+    [
+      "kai_ships",
+      "g5"
+    ],
+    [
+      "sana_runs",
+      "g5"
+    ],
+    [
+      "omar_cooks",
+      "g6"
+    ],
+    [
+      "ada_codes",
+      "g8"
+    ],
+    [
+      "zoe_plants",
+      "g8"
+    ]
+  ]
+}

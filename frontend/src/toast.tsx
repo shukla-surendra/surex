@@ -1,23 +1,24 @@
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react';
 
-type Notify = (message: string) => void;
+type Kind = 'info' | 'error';
+type Notify = (message: string, kind?: Kind) => void;
 
 const ToastContext = createContext<Notify>(() => {});
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [message, setMessage] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; kind: Kind } | null>(null);
   const timer = useRef<number | undefined>(undefined);
-  const notify = useCallback<Notify>((msg) => {
-    setMessage(msg);
+  const notify = useCallback<Notify>((message, kind = 'info') => {
+    setToast({ message, kind });
     window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => setMessage(null), 3000);
+    timer.current = window.setTimeout(() => setToast(null), 3000);
   }, []);
   return (
     <ToastContext.Provider value={notify}>
       {children}
-      {message && (
-        <div className="toast" role="alert">
-          {message}
+      {toast && (
+        <div className={`toast ${toast.kind}`} role={toast.kind === 'error' ? 'alert' : 'status'}>
+          {toast.message}
         </div>
       )}
     </ToastContext.Provider>
@@ -32,7 +33,7 @@ export function useGuard() {
       try {
         await action();
       } catch (e) {
-        notify(e instanceof Error ? e.message : String(e));
+        notify(e instanceof Error ? e.message : String(e), 'error');
       }
     },
     [notify],

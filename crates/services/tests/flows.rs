@@ -3,6 +3,7 @@ use social_core::{Error, PostId, UserId};
 use social_events::InProcBus;
 use social_services::{spawn_workers, App, Config, WorkerSet};
 use social_storage::Stores;
+use social_storage_fs::FsMediaStore;
 use social_storage_scylla::{ScyllaConfig, ScyllaStore};
 use social_storage_sqlite::SqliteStore;
 use std::future::Future;
@@ -27,7 +28,8 @@ async fn env(cfg: Config) -> Env {
         }
     };
     let cache = Arc::new(InProcTimelineCache::new(10_000, cfg.timeline_cap));
-    let app = App::new(stores, cache, Arc::new(InProcBus::new()), cfg).unwrap();
+    let media = Arc::new(FsMediaStore::open(dir.path().join("media")).unwrap());
+    let app = App::new(stores, media, cache, Arc::new(InProcBus::new()), cfg).unwrap();
     spawn_workers(&app, WorkerSet::all());
     Env { app, _dir: dir }
 }
@@ -88,7 +90,7 @@ async fn fanout_delivers_posts_and_deletes_hide_them() {
 
     assert!(home_ids(&app, bob).await.is_empty()); // seeds bob's cached timeline
     app.follow(bob, "alice").await.unwrap();
-    let post = app.create_post(alice, "hello world", None).await.unwrap();
+    let post = app.create_post(alice, "hello world", None, &[]).await.unwrap();
 
     eventually(|| async { home_ids(&app, bob).await == vec![post.id] }).await;
     assert_eq!(home_ids(&app, alice).await, vec![post.id], "authors see their own posts");
@@ -107,7 +109,7 @@ async fn unfollow_removes_posts_from_home() {
     let Env { app, _dir } = env(Config::default()).await;
     let (alice, bob) = (user(&app, "alice").await, user(&app, "bob").await);
     app.follow(bob, "alice").await.unwrap();
-    app.create_post(alice, "one", None).await.unwrap();
+    app.create_post(alice, "one", None, &[]).await.unwrap();
     eventually(|| async { home_ids(&app, bob).await.len() == 1 }).await;
 
     app.unfollow(bob, "alice").await.unwrap();
@@ -118,7 +120,7 @@ async fn unfollow_removes_posts_from_home() {
 async fn likes_are_idempotent_and_counted_asynchronously() {
     let Env { app, _dir } = env(Config::default()).await;
     let (alice, bob) = (user(&app, "alice").await, user(&app, "bob").await);
-    let post = app.create_post(alice, "like me", None).await.unwrap();
+    let post = app.create_post(alice, "like me", None, &[]).await.unwrap();
 
     app.like(bob, post.id).await.unwrap();
     app.like(bob, post.id).await.unwrap();
@@ -137,7 +139,7 @@ async fn celebrity_posts_are_pulled_at_read_time() {
     app.follow(bob, "alice").await.unwrap(); // alice now has 1 follower = celebrity
     assert!(home_ids(&app, bob).await.is_empty());
 
-    let post = app.create_post(alice, "to my fans", None).await.unwrap();
+    let post = app.create_post(alice, "to my fans", None, &[]).await.unwrap();
     // No waiting: the read path pulls celebrity posts straight from storage.
     assert_eq!(home_ids(&app, bob).await, vec![post.id]);
 }
@@ -147,7 +149,7 @@ async fn pagination_walks_everything_once() {
     let Env { app, _dir } = env(Config { timeline_cap: 5, ..Config::default() }).await;
     let (alice, bob) = (user(&app, "alice").await, user(&app, "bob").await);
     for i in 0..12 {
-        app.create_post(alice, &format!("post {i}"), None).await.unwrap();
+        app.create_post(alice, &format!("post {i}"), None, &[]).await.unwrap();
     }
     app.follow(bob, "alice").await.unwrap();
 
@@ -175,9 +177,122 @@ async fn pagination_walks_everything_once() {
 async fn replies_require_a_live_parent() {
     let Env { app, _dir } = env(Config::default()).await;
     let alice = user(&app, "alice").await;
-    let parent = app.create_post(alice, "parent", None).await.unwrap();
-    let reply = app.create_post(alice, "reply", Some(parent.id)).await.unwrap();
+    let parent = app.create_post(alice, "parent", None, &[]).await.unwrap();
+    let reply = app.create_post(alice, "reply", Some(parent.id), &[]).await.unwrap();
     assert_eq!(reply.reply_to, Some(parent.id));
-    assert!(matches!(app.create_post(alice, "x", Some(PostId(1))).await, Err(Error::NotFound(_))));
-    assert!(matches!(app.create_post(alice, "   ", None).await, Err(Error::Invalid(_))));
+    assert!(matches!(app.create_post(alice, "x", Some(PostId(1)), &[]).await, Err(Error::NotFound(_))));
+    assert!(matches!(app.create_post(alice, "   ", None, &[]).await, Err(Error::Invalid(_))));
+}
+
+#[tokio::test]
+async fn replies_form_threads_and_are_counted() {
+    let Env { app, _dir } = env(Config::default()).await;
+    let (alice, bob) = (user(&app, "alice").await, user(&app, "bob").await);
+    let root = app.create_post(alice, "root", None, &[]).await.unwrap();
+    let r1 = app.create_post(bob, "first", Some(root.id), &[]).await.unwrap();
+    assert_eq!(r1.replying_to.as_deref(), Some("alice"));
+    let r2 = app.create_post(alice, "second", Some(root.id), &[]).await.unwrap();
+
+    let page = app.replies(None, root.id, None, 10).await.unwrap();
+    assert_eq!(page.items.iter().map(|p| p.id).collect::<Vec<_>>(), vec![r1.id, r2.id], "oldest first");
+    assert_eq!(page.items[0].replying_to.as_deref(), Some("alice"));
+    assert_eq!(app.get_post(None, root.id).await.unwrap().reply_count, 2);
+
+    // Paging forward with `after`.
+    let first = app.replies(None, root.id, None, 1).await.unwrap();
+    assert_eq!(first.next, Some(r1.id));
+    let rest = app.replies(None, root.id, first.next, 1).await.unwrap();
+    assert_eq!(rest.items[0].id, r2.id);
+
+    app.delete_post(bob, r1.id).await.unwrap();
+    assert_eq!(app.get_post(None, root.id).await.unwrap().reply_count, 1);
+    assert_eq!(app.replies(None, root.id, None, 10).await.unwrap().items.len(), 1);
+}
+
+#[tokio::test]
+async fn profiles_can_be_edited() {
+    let Env { app, _dir } = env(Config::default()).await;
+    let alice = user(&app, "alice").await;
+    let me = app.update_profile(alice, "  Alice A. ", "Builds things.\nLikes tea.").await.unwrap();
+    assert_eq!((me.display_name.as_str(), me.bio.as_str()), ("Alice A.", "Builds things.\nLikes tea."));
+
+    let profile = app.profile(None, "ALICE").await.unwrap();
+    assert_eq!(profile.user.display_name, "Alice A.", "name-keyed lookups see the update");
+    let post = app.create_post(alice, "hi", None, &[]).await.unwrap();
+    assert_eq!(app.get_post(None, post.id).await.unwrap().author.display_name, "Alice A.");
+
+    assert!(matches!(app.update_profile(alice, &"x".repeat(51), "").await, Err(Error::Invalid(_))));
+    let cleared = app.update_profile(alice, "", "").await.unwrap();
+    assert!(cleared.display_name.is_empty() && cleared.bio.is_empty());
+}
+
+#[tokio::test]
+async fn follower_lists_page_in_id_order() {
+    let Env { app, _dir } = env(Config::default()).await;
+    let alice = user(&app, "alice").await;
+    let mut fans = Vec::new();
+    for name in ["bob", "carol", "dave"] {
+        fans.push(user(&app, name).await);
+        app.follow(*fans.last().unwrap(), "alice").await.unwrap();
+    }
+    app.follow(alice, "bob").await.unwrap();
+
+    let (mut seen, mut after) = (Vec::new(), None);
+    loop {
+        let page = app.followers("alice", after, 2).await.unwrap();
+        seen.extend(page.items.iter().map(|u| u.id));
+        match page.next {
+            Some(n) => after = Some(n),
+            None => break,
+        }
+    }
+    fans.sort();
+    assert_eq!(seen, fans);
+    let following = app.following("alice", None, 10).await.unwrap();
+    assert_eq!(following.items.iter().map(|u| u.username.as_str()).collect::<Vec<_>>(), vec!["bob"]);
+    assert!(following.next.is_none());
+}
+
+/// The smallest header `imagesize` recognises: PNG signature plus an IHDR chunk.
+fn png_header(width: u32, height: u32) -> Vec<u8> {
+    let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    b.extend(width.to_be_bytes());
+    b.extend(height.to_be_bytes());
+    b.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    b
+}
+
+#[tokio::test]
+async fn posts_carry_uploaded_images() {
+    let Env { app, _dir } = env(Config::default()).await;
+    let (alice, bob) = (user(&app, "alice").await, user(&app, "bob").await);
+
+    let img = app.upload_media(alice, &png_header(640, 480)).await.unwrap();
+    assert_eq!((img.content_type.as_str(), img.width, img.height), ("image/png", 640, 480));
+    assert_eq!(img.url, format!("/api/v1/media/{}", img.id));
+    let (meta, bytes) = app.media(img.id).await.unwrap();
+    assert_eq!((meta.owner, bytes.len()), (alice, png_header(640, 480).len()));
+
+    // Image-only posts are allowed; alt text is kept and trimmed.
+    let post = app.create_post(alice, "  ", None, &[(img.id, " a red kite ".into())]).await.unwrap();
+    assert_eq!(post.body, "");
+    let shown = app.get_post(None, post.id).await.unwrap();
+    assert_eq!(shown.media.len(), 1);
+    assert_eq!((shown.media[0].id, shown.media[0].alt.as_str(), shown.media[0].width), (img.id, "a red kite", 640));
+
+    // Not an image, someone else's image, duplicates, and too many images are refused.
+    assert!(matches!(app.upload_media(alice, b"<svg xmlns='http://www.w3.org/2000/svg'/>").await, Err(Error::Invalid(_))));
+    assert!(matches!(app.create_post(bob, "mine now", None, &[(img.id, String::new())]).await, Err(Error::NotFound(_))));
+    let dup = [(img.id, String::new()), (img.id, String::new())];
+    assert!(matches!(app.create_post(alice, "twice", None, &dup).await, Err(Error::Invalid(_))));
+    let mut five = Vec::new();
+    for _ in 0..5 {
+        five.push((app.upload_media(alice, &png_header(10, 10)).await.unwrap().id, String::new()));
+    }
+    assert!(matches!(app.create_post(alice, "five", None, &five).await, Err(Error::Invalid(_))));
+    assert!(app.create_post(alice, "four", None, &five[..4]).await.is_ok());
+
+    // Deleting a post drops its images from the view.
+    app.delete_post(alice, post.id).await.unwrap();
+    assert!(matches!(app.get_post(None, post.id).await, Err(Error::NotFound(_))));
 }

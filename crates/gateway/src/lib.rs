@@ -6,6 +6,7 @@ mod ratelimit;
 
 pub use ratelimit::{Bucket, Limits};
 
+use axum::body::Bytes;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, FromRequest, FromRequestParts, Request, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
@@ -16,8 +17,8 @@ use axum::{Json, Router};
 use error::ApiError;
 use ratelimit::{Class, RateLimiter};
 use serde::Deserialize;
-use social_core::{validate, Error, PostId, UserId};
-use social_services::{App, Page, PostView, ProfileView, UserView};
+use social_core::{validate, Error, MediaId, PostId, UserId};
+use social_services::{App, MediaView, Page, PostView, ProfileView, UserView};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -77,15 +78,20 @@ pub fn router(app: App, cfg: GatewayConfig) -> Router {
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
-        .route("/me", get(me))
+        .route("/me", get(me).patch(update_me))
         .route("/timeline/home", get(home))
         .route("/timeline/global", get(global))
+        .route("/media", post(upload_media).layer(DefaultBodyLimit::max(validate::MEDIA_MAX_BYTES)))
+        .route("/media/{id}", get(get_media))
         .route("/posts", post(create_post))
         .route("/posts/{id}", get(get_post).delete(delete_post))
         .route("/posts/{id}/like", put(like).delete(unlike))
+        .route("/posts/{id}/replies", get(replies))
         .route("/users/{username}", get(profile))
         .route("/users/{username}/posts", get(user_posts))
-        .route("/users/{username}/follow", put(follow).delete(unfollow));
+        .route("/users/{username}/follow", put(follow).delete(unfollow))
+        .route("/users/{username}/followers", get(followers))
+        .route("/users/{username}/following", get(following));
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -204,8 +210,31 @@ struct Credentials {
 
 #[derive(Deserialize)]
 struct NewPost {
+    #[serde(default)]
     body: String,
     reply_to: Option<PostId>,
+    #[serde(default)]
+    media: Vec<NewMedia>,
+}
+
+#[derive(Deserialize)]
+struct NewMedia {
+    id: MediaId,
+    #[serde(default)]
+    alt: String,
+}
+
+#[derive(Deserialize)]
+struct ProfileUpdate {
+    display_name: String,
+    bio: String,
+}
+
+/// Forward cursor for oldest-first lists (replies, followers, following).
+#[derive(Deserialize)]
+struct AfterQuery<C> {
+    after: Option<C>,
+    limit: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -236,6 +265,10 @@ async fn me(State(gw): State<Gw>, Auth(user): Auth) -> ApiResult<Json<UserView>>
     Ok(Json(gw.app.me(user).await?))
 }
 
+async fn update_me(State(gw): State<Gw>, Auth(user): Auth, ApiJson(p): ApiJson<ProfileUpdate>) -> ApiResult<Json<UserView>> {
+    Ok(Json(gw.app.update_profile(user, &p.display_name, &p.bio).await?))
+}
+
 async fn home(State(gw): State<Gw>, Auth(user): Auth, ApiQuery(q): ApiQuery<PageQuery>) -> ApiResult<Json<Page<PostView>>> {
     Ok(Json(gw.app.home_timeline(user, q.before, validate::page_limit(q.limit)).await?))
 }
@@ -245,12 +278,44 @@ async fn global(State(gw): State<Gw>, Viewer(v): Viewer, ApiQuery(q): ApiQuery<P
 }
 
 async fn create_post(State(gw): State<Gw>, Auth(user): Auth, ApiJson(p): ApiJson<NewPost>) -> ApiResult<Response> {
-    let post = gw.app.create_post(user, &p.body, p.reply_to).await?;
+    let media: Vec<(MediaId, String)> = p.media.into_iter().map(|m| (m.id, m.alt)).collect();
+    let post = gw.app.create_post(user, &p.body, p.reply_to, &media).await?;
     Ok((StatusCode::CREATED, Json(post)).into_response())
+}
+
+/// The request body is the raw image; its type is detected from the bytes.
+async fn upload_media(State(gw): State<Gw>, Auth(user): Auth, body: Bytes) -> ApiResult<Response> {
+    let media: MediaView = gw.app.upload_media(user, &body).await?;
+    Ok((StatusCode::CREATED, Json(media)).into_response())
+}
+
+/// Image bytes. Ids are never reused, so responses are cacheable forever.
+async fn get_media(State(gw): State<Gw>, ApiPath(id): ApiPath<MediaId>) -> ApiResult<Response> {
+    let (meta, data) = gw.app.media(id).await?;
+    let content_type = HeaderValue::from_str(&meta.content_type).map_err(|e| ApiError(Error::Internal(e.to_string())))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable")),
+            (header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
+            (header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'none'; sandbox")),
+        ],
+        data,
+    )
+        .into_response())
 }
 
 async fn get_post(State(gw): State<Gw>, Viewer(v): Viewer, ApiPath(id): ApiPath<PostId>) -> ApiResult<Json<PostView>> {
     Ok(Json(gw.app.get_post(v, id).await?))
+}
+
+async fn replies(
+    State(gw): State<Gw>,
+    Viewer(v): Viewer,
+    ApiPath(id): ApiPath<PostId>,
+    ApiQuery(q): ApiQuery<AfterQuery<PostId>>,
+) -> ApiResult<Json<Page<PostView>>> {
+    Ok(Json(gw.app.replies(v, id, q.after, validate::page_limit(q.limit)).await?))
 }
 
 async fn delete_post(State(gw): State<Gw>, Auth(user): Auth, ApiPath(id): ApiPath<PostId>) -> ApiResult<StatusCode> {
@@ -279,6 +344,22 @@ async fn user_posts(
     ApiQuery(q): ApiQuery<PageQuery>,
 ) -> ApiResult<Json<Page<PostView>>> {
     Ok(Json(gw.app.user_timeline(v, &name, q.before, validate::page_limit(q.limit)).await?))
+}
+
+async fn followers(
+    State(gw): State<Gw>,
+    ApiPath(name): ApiPath<String>,
+    ApiQuery(q): ApiQuery<AfterQuery<UserId>>,
+) -> ApiResult<Json<Page<UserView, UserId>>> {
+    Ok(Json(gw.app.followers(&name, q.after, validate::page_limit(q.limit)).await?))
+}
+
+async fn following(
+    State(gw): State<Gw>,
+    ApiPath(name): ApiPath<String>,
+    ApiQuery(q): ApiQuery<AfterQuery<UserId>>,
+) -> ApiResult<Json<Page<UserView, UserId>>> {
+    Ok(Json(gw.app.following(&name, q.after, validate::page_limit(q.limit)).await?))
 }
 
 async fn follow(State(gw): State<Gw>, Auth(user): Auth, ApiPath(name): ApiPath<String>) -> ApiResult<StatusCode> {

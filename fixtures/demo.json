@@ -1,0 +1,437 @@
+{
+  "password": "surex-demo-123",
+  "users": [
+    {
+      "username": "ada_codes",
+      "display_name": "Ada Okafor",
+      "bio": "Backend engineer. Distributed systems, strong coffee, weak opinions. #rustlang"
+    },
+    {
+      "username": "leo_draws",
+      "display_name": "Leo Marchetti",
+      "bio": "Illustrator & type nerd. Drawing one tiny thing every day."
+    },
+    {
+      "username": "sana_runs",
+      "display_name": "Sana Iqbal",
+      "bio": "Trail runner, data analyst, sourdough apologist."
+    },
+    {
+      "username": "kai_ships",
+      "display_name": "Kai Nakamura",
+      "bio": "Product designer. Shipping small things often.\nPreviously: lots of whiteboards."
+    },
+    {
+      "username": "mira_reads",
+      "display_name": "Mira Lindqvist",
+      "bio": "Librarian by day. 52 books a year, give or take. #books"
+    },
+    {
+      "username": "omar_cooks",
+      "display_name": "Omar Haddad",
+      "bio": "Home cook. If it has cumin in it, I'm interested."
+    },
+    {
+      "username": "zoe_plants",
+      "display_name": "Zoe Fontaine",
+      "bio": "Balcony gardener. Currently negotiating with a tomato plant."
+    },
+    {
+      "username": "newbie_nate",
+      "display_name": "",
+      "bio": ""
+    }
+  ],
+  "follows": [
+    [
+      "ada_codes",
+      "kai_ships"
+    ],
+    [
+      "ada_codes",
+      "sana_runs"
+    ],
+    [
+      "ada_codes",
+      "mira_reads"
+    ],
+    [
+      "leo_draws",
+      "kai_ships"
+    ],
+    [
+      "leo_draws",
+      "zoe_plants"
+    ],
+    [
+      "leo_draws",
+      "ada_codes"
+    ],
+    [
+      "sana_runs",
+      "ada_codes"
+    ],
+    [
+      "sana_runs",
+      "omar_cooks"
+    ],
+    [
+      "sana_runs",
+      "zoe_plants"
+    ],
+    [
+      "kai_ships",
+      "ada_codes"
+    ],
+    [
+      "kai_ships",
+      "leo_draws"
+    ],
+    [
+      "kai_ships",
+      "mira_reads"
+    ],
+    [
+      "mira_reads",
+      "leo_draws"
+    ],
+    [
+      "mira_reads",
+      "omar_cooks"
+    ],
+    [
+      "omar_cooks",
+      "zoe_plants"
+    ],
+    [
+      "omar_cooks",
+      "sana_runs"
+    ],
+    [
+      "omar_cooks",
+      "mira_reads"
+    ],
+    [
+      "zoe_plants",
+      "omar_cooks"
+    ],
+    [
+      "zoe_plants",
+      "leo_draws"
+    ],
+    [
+      "newbie_nate",
+      "ada_codes"
+    ]
+  ],
+  "posts": [
+    {
+      "key": "ada1",
+      "author": "ada_codes",
+      "body": "Moved our timeline reads to single-partition lookups. p99 went from 'please no' to 'oh nice'. #rustlang",
+      "images": [
+        {
+          "file": "images/latency-chart.png",
+          "alt": "Line chart of p99 latency: high and jagged before the change, then a sharp drop to a low, flat line."
+        }
+      ]
+    },
+    {
+      "key": "kai1",
+      "author": "kai_ships",
+      "body": "Design rule I keep relearning: the empty state is the first screen most people see. Make it kind."
+    },
+    {
+      "key": "leo1",
+      "author": "leo_draws",
+      "body": "Day 214 of drawing one tiny thing: a teacup that is clearly judging me."
+    },
+    {
+      "key": "sana1",
+      "author": "sana_runs",
+      "body": "Ran the ridge trail at sunrise. 14 km, 600 m of climbing, and one very confused deer. #trailrunning",
+      "images": [
+        {
+          "file": "images/ridge-sunrise.png",
+          "alt": "Sunrise over layered purple mountain ridges, with a pale trail winding along the nearest ridge."
+        }
+      ]
+    },
+    {
+      "key": "mira1",
+      "author": "mira_reads",
+      "body": "Finished 'The Left Hand of Darkness' again. Still the best winter book I know. What should I read next? #books",
+      "images": [
+        {
+          "file": "images/book-stack.png",
+          "alt": "A stack of seven colourful hardback books on a wooden shelf."
+        }
+      ]
+    },
+    {
+      "key": "omar1",
+      "author": "omar_cooks",
+      "body": "Tonight: lentil soup with cumin, lemon and way too much garlic. No regrets.",
+      "images": [
+        {
+          "file": "images/lentil-soup.png",
+          "alt": "Top-down view of a bowl of orange lentil soup with herbs and a slice of lemon, on a dark wooden table."
+        }
+      ]
+    },
+    {
+      "key": "zoe1",
+      "author": "zoe_plants",
+      "body": "The tomato plant has produced exactly one (1) tomato. I am so proud I could cry. 🍅",
+      "images": [
+        {
+          "file": "images/tomato.png",
+          "alt": "A single round red tomato with a green stem, on a plain cream background."
+        }
+      ]
+    },
+    {
+      "key": "kai2",
+      "author": "kai_ships",
+      "body": "Shipped a tiny feature today: you can now see how many people replied to a post. Small things compound."
+    },
+    {
+      "key": "ada2",
+      "author": "ada_codes",
+      "body": "Hot take: most 'we need microservices' problems are 'we need clear module boundaries' problems."
+    },
+    {
+      "key": "leo2",
+      "author": "leo_draws",
+      "body": "Trying a new brush pen. It has opinions about line weight that differ from mine. https://example.com/brushes",
+      "images": [
+        {
+          "file": "images/brush-strokes.png",
+          "alt": "Nine wavy ink lines of varying thickness drawn across cream paper, with a terracotta circle near the top right."
+        }
+      ]
+    },
+    {
+      "key": "sana2",
+      "author": "sana_runs",
+      "body": "Data analyst confession: my favorite chart is still a well-labeled table."
+    },
+    {
+      "key": "omar2",
+      "author": "omar_cooks",
+      "body": "Bread update: the starter (named Gerald) is thriving. I am not sure I am.",
+      "images": [
+        {
+          "file": "images/sourdough-starter.png",
+          "alt": "A glass jar of bubbly sourdough starter with a red band marking where it started."
+        }
+      ]
+    },
+    {
+      "key": "mira2",
+      "author": "mira_reads",
+      "body": "Library tip: ask your librarian for 'read-alikes'. We love that question more than you know."
+    },
+    {
+      "key": "zoe2",
+      "author": "zoe_plants",
+      "body": "Basil is the golden retriever of herbs. Water it and it just loves you back.",
+      "images": [
+        {
+          "file": "images/basil.png",
+          "alt": "A small terracotta pot with a bushy green herb plant."
+        }
+      ]
+    },
+    {
+      "key": "r1",
+      "author": "sana_runs",
+      "reply_to": "ada1",
+      "body": "@ada_codes what did you change on the write path to make that work?"
+    },
+    {
+      "key": "r2",
+      "author": "ada_codes",
+      "reply_to": "r1",
+      "body": "@sana_runs denormalized per query: one table per read pattern, written together in a batch."
+    },
+    {
+      "key": "r3",
+      "author": "kai_ships",
+      "reply_to": "ada1",
+      "body": "Those graphs are going straight into the team update. 👏"
+    },
+    {
+      "key": "r4",
+      "author": "leo_draws",
+      "reply_to": "mira1",
+      "body": "@mira_reads 'Piranesi' if you haven't. It's a quiet, strange, lovely book."
+    },
+    {
+      "key": "r5",
+      "author": "omar_cooks",
+      "reply_to": "mira1",
+      "body": "Anything by Ursula K. Le Guin, honestly. 'The Dispossessed' next?"
+    },
+    {
+      "key": "r6",
+      "author": "mira_reads",
+      "reply_to": "r4",
+      "body": "@leo_draws adding it to the pile. The pile is now a tower."
+    },
+    {
+      "key": "r7",
+      "author": "zoe_plants",
+      "reply_to": "omar2",
+      "body": "@omar_cooks Gerald deserves a name tag and a tiny hat."
+    },
+    {
+      "key": "r8",
+      "author": "omar_cooks",
+      "reply_to": "zoe1",
+      "body": "@zoe_plants frame it. Then eat it. In that order."
+    },
+    {
+      "key": "r9",
+      "author": "ada_codes",
+      "reply_to": "kai1",
+      "body": "Same for error messages. Nobody reads the docs, everybody reads the error."
+    },
+    {
+      "key": "r10",
+      "author": "newbie_nate",
+      "reply_to": "kai1",
+      "body": "hi everyone, first post! still figuring this place out"
+    }
+  ],
+  "likes": [
+    [
+      "kai_ships",
+      "ada1"
+    ],
+    [
+      "sana_runs",
+      "ada1"
+    ],
+    [
+      "leo_draws",
+      "ada1"
+    ],
+    [
+      "mira_reads",
+      "ada1"
+    ],
+    [
+      "ada_codes",
+      "kai1"
+    ],
+    [
+      "leo_draws",
+      "kai1"
+    ],
+    [
+      "mira_reads",
+      "kai1"
+    ],
+    [
+      "zoe_plants",
+      "leo1"
+    ],
+    [
+      "kai_ships",
+      "leo1"
+    ],
+    [
+      "omar_cooks",
+      "leo1"
+    ],
+    [
+      "ada_codes",
+      "sana1"
+    ],
+    [
+      "omar_cooks",
+      "sana1"
+    ],
+    [
+      "leo_draws",
+      "mira1"
+    ],
+    [
+      "omar_cooks",
+      "mira1"
+    ],
+    [
+      "kai_ships",
+      "mira1"
+    ],
+    [
+      "sana_runs",
+      "omar1"
+    ],
+    [
+      "zoe_plants",
+      "omar1"
+    ],
+    [
+      "omar_cooks",
+      "zoe1"
+    ],
+    [
+      "leo_draws",
+      "zoe1"
+    ],
+    [
+      "sana_runs",
+      "zoe1"
+    ],
+    [
+      "mira_reads",
+      "zoe1"
+    ],
+    [
+      "ada_codes",
+      "kai2"
+    ],
+    [
+      "sana_runs",
+      "ada2"
+    ],
+    [
+      "kai_ships",
+      "ada2"
+    ],
+    [
+      "zoe_plants",
+      "omar2"
+    ],
+    [
+      "mira_reads",
+      "mira2"
+    ],
+    [
+      "ada_codes",
+      "r2"
+    ],
+    [
+      "kai_ships",
+      "r9"
+    ],
+    [
+      "mira_reads",
+      "r4"
+    ],
+    [
+      "omar_cooks",
+      "r7"
+    ],
+    [
+      "kai_ships",
+      "r10"
+    ],
+    [
+      "ada_codes",
+      "r10"
+    ]
+  ]
+}

@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource-variable/bricolage-grotesque": "5.2.10",
     "react": "19.1.9",
     "react-dom": "19.1.9"
   },

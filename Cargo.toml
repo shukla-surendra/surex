@@ -12,6 +12,7 @@ social-core = { path = "crates/core" }
 social-storage = { path = "crates/storage" }
 social-storage-sqlite = { path = "crates/storage-sqlite" }
 social-storage-scylla = { path = "crates/storage-scylla" }
+social-storage-fs = { path = "crates/storage-fs" }
 social-cache = { path = "crates/cache" }
 social-events = { path = "crates/events" }
 social-services = { path = "crates/services" }
@@ -24,6 +25,7 @@ clap = { version = "4", features = ["derive", "env"] }
 dashmap = "6"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hex = "0.4"
+imagesize = "0.13"
 mimalloc = "0.1"
 moka = { version = "0.12", features = ["sync"] }
 r2d2 = "0.8"

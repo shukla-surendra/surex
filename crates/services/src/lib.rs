@@ -4,7 +4,7 @@
 mod views;
 mod workers;
 
-pub use views::{Page, PostView, ProfileView, UserView};
+pub use views::{media_url, MediaView, Page, PostView, ProfileView, UserView};
 pub use workers::{spawn_workers, WorkerSet, Workers};
 
 use rand_core::{OsRng, RngCore};
@@ -12,9 +12,12 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::Argon2;
 use sha2::{Digest, Sha256};
 use social_cache::TimelineCache;
-use social_core::{id_timestamp_ms, now_ms, validate, Error, Event, IdGen, Post, PostId, Result, User, UserId};
+use social_core::{
+    id_timestamp_ms, now_ms, validate, Error, Event, IdGen, MediaId, MediaMeta, MediaRef, Post, PostId, Result, User,
+    UserId,
+};
 use social_events::EventBus;
-use social_storage::Stores;
+use social_storage::{MediaStore, Stores};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::Arc;
@@ -47,6 +50,7 @@ impl Default for Config {
 
 pub struct Inner {
     pub stores: Stores,
+    pub media: Arc<dyn MediaStore>,
     pub cache: Arc<dyn TimelineCache>,
     pub bus: Arc<dyn EventBus>,
     pub cfg: Config,
@@ -92,7 +96,13 @@ fn merge_desc(mut a: Vec<PostId>, b: Vec<PostId>, limit: usize) -> Vec<PostId> {
 }
 
 impl App {
-    pub fn new(stores: Stores, cache: Arc<dyn TimelineCache>, bus: Arc<dyn EventBus>, cfg: Config) -> Result<Self> {
+    pub fn new(
+        stores: Stores,
+        media: Arc<dyn MediaStore>,
+        cache: Arc<dyn TimelineCache>,
+        bus: Arc<dyn EventBus>,
+        cfg: Config,
+    ) -> Result<Self> {
         let dummy_hash = Argon2::default()
             .hash_password(b"timing-equalizer", &SaltString::generate(&mut OsRng))
             .map_err(internal)?
@@ -101,6 +111,7 @@ impl App {
         Ok(App(Arc::new(Inner {
             ids: IdGen::new(cfg.worker_id),
             stores,
+            media,
             cache,
             bus,
             cfg,
@@ -115,7 +126,13 @@ impl App {
         validate::username(username)?;
         validate::password(password)?;
         let hash = self.hash_password(password.to_owned()).await?;
-        let user = User { id: UserId(self.ids.next()), username: username.to_owned(), created_at: now_ms() as i64 };
+        let user = User {
+            id: UserId(self.ids.next()),
+            username: username.to_owned(),
+            created_at: now_ms() as i64,
+            display_name: String::new(),
+            bio: String::new(),
+        };
         self.stores.users.create_user(&user, &hash).await?;
         self.new_session(user).await
     }
@@ -141,6 +158,15 @@ impl App {
 
     pub async fn me(&self, user: UserId) -> Result<UserView> {
         self.stores.users.user_by_id(user).await?.map(Into::into).ok_or(Error::Unauthorized)
+    }
+
+    /// Replaces the caller's display name and bio; empty strings clear them.
+    pub async fn update_profile(&self, user: UserId, display_name: &str, bio: &str) -> Result<UserView> {
+        let mut u = self.stores.users.user_by_id(user).await?.ok_or(Error::Unauthorized)?;
+        u.display_name = validate::display_name(display_name)?;
+        u.bio = validate::bio(bio)?;
+        self.stores.users.update_profile(&u).await?;
+        Ok(u.into())
     }
 
     async fn new_session(&self, user: User) -> Result<Session> {
@@ -173,13 +199,83 @@ impl App {
         .map_err(internal)
     }
 
+    // ---- media ----------------------------------------------------------------------
+
+    /// Stores an uploaded image. The type comes from the bytes, never from the client.
+    pub async fn upload_media(&self, owner: UserId, data: &[u8]) -> Result<MediaView> {
+        if data.len() > validate::MEDIA_MAX_BYTES {
+            return Err(Error::Invalid(format!("images must be at most {} MB", validate::MEDIA_MAX_BYTES >> 20)));
+        }
+        let content_type = match imagesize::image_type(data) {
+            Ok(imagesize::ImageType::Png) => "image/png",
+            Ok(imagesize::ImageType::Jpeg) => "image/jpeg",
+            Ok(imagesize::ImageType::Gif) => "image/gif",
+            Ok(imagesize::ImageType::Webp) => "image/webp",
+            _ => return Err(Error::Invalid("images must be PNG, JPEG, GIF or WebP".into())),
+        };
+        let size = imagesize::blob_size(data).map_err(|_| Error::Invalid("unreadable image".into()))?;
+        let (width, height) = (size.width as u32, size.height as u32);
+        if width == 0 || height == 0 || width.max(height) > validate::MEDIA_MAX_SIDE {
+            return Err(Error::Invalid(format!("images must be at most {} px on a side", validate::MEDIA_MAX_SIDE)));
+        }
+        let meta = MediaMeta {
+            id: MediaId(self.ids.next()),
+            owner,
+            content_type: content_type.into(),
+            width,
+            height,
+            bytes: data.len() as u64,
+        };
+        self.media.put(&meta, data).await?;
+        Ok(MediaRef { id: meta.id, content_type: meta.content_type, width, height, alt: String::new() }.into())
+    }
+
+    pub async fn media(&self, id: MediaId) -> Result<(MediaMeta, Vec<u8>)> {
+        self.media.get(id).await?.ok_or(Error::NotFound("media"))
+    }
+
+    /// Resolves images a post wants to attach: they must exist and belong to `author`.
+    async fn attachments(&self, author: UserId, wanted: &[(MediaId, String)]) -> Result<Vec<MediaRef>> {
+        if wanted.len() > validate::MAX_MEDIA {
+            return Err(Error::Invalid(format!("a post can have at most {} images", validate::MAX_MEDIA)));
+        }
+        let mut out: Vec<MediaRef> = Vec::with_capacity(wanted.len());
+        for (id, alt) in wanted {
+            if out.iter().any(|m| m.id == *id) {
+                return Err(Error::Invalid("the same image is attached twice".into()));
+            }
+            let meta = self.media.meta(*id).await?.filter(|m| m.owner == author).ok_or(Error::NotFound("media"))?;
+            out.push(MediaRef {
+                id: meta.id,
+                content_type: meta.content_type,
+                width: meta.width,
+                height: meta.height,
+                alt: validate::alt_text(alt)?,
+            });
+        }
+        Ok(out)
+    }
+
     // ---- posts and likes ------------------------------------------------------------
 
-    pub async fn create_post(&self, author: UserId, body: &str, reply_to: Option<PostId>) -> Result<PostView> {
-        let body = validate::post_body(body)?;
-        if let Some(parent) = reply_to {
-            self.live_post(parent).await?;
-        }
+    /// `media` is `(id, alt text)` for images uploaded by `author`; with images the
+    /// body may be empty.
+    pub async fn create_post(
+        &self,
+        author: UserId,
+        body: &str,
+        reply_to: Option<PostId>,
+        media: &[(MediaId, String)],
+    ) -> Result<PostView> {
+        let body = if media.is_empty() { validate::post_body(body)? } else { validate::post_body_optional(body)? };
+        let media = self.attachments(author, media).await?;
+        let replying_to = match reply_to {
+            Some(parent) => {
+                let parent = self.live_post(parent).await?;
+                Some(self.stores.users.user_by_id(parent.author_id).await?.ok_or(Error::NotFound("user"))?.username)
+            }
+            None => None,
+        };
         let author_user = self.stores.users.user_by_id(author).await?.ok_or(Error::Unauthorized)?;
         let id = self.ids.next();
         let post = Post {
@@ -189,6 +285,8 @@ impl App {
             reply_to,
             created_at: id_timestamp_ms(id),
             like_count: 0,
+            reply_count: 0,
+            media,
             deleted: false,
         };
         self.stores.posts.insert(&post).await?;
@@ -198,14 +296,30 @@ impl App {
             author: author_user.into(),
             body: post.body,
             reply_to,
+            replying_to,
             created_at: post.created_at,
             like_count: 0,
+            reply_count: 0,
             liked: false,
+            media: post.media.into_iter().map(Into::into).collect(),
         })
     }
 
     pub async fn get_post(&self, viewer: Option<UserId>, id: PostId) -> Result<PostView> {
         self.hydrate(viewer, &[id]).await?.pop().ok_or(Error::NotFound("post"))
+    }
+
+    /// Replies to a live post, oldest first.
+    pub async fn replies(
+        &self,
+        viewer: Option<UserId>,
+        id: PostId,
+        after: Option<PostId>,
+        limit: usize,
+    ) -> Result<Page<PostView>> {
+        self.live_post(id).await?;
+        let ids = self.stores.posts.replies(id, after, limit).await?;
+        self.page(viewer, ids, limit).await
     }
 
     pub async fn delete_post(&self, user: UserId, id: PostId) -> Result<()> {
@@ -276,6 +390,27 @@ impl App {
             posts: stats.posts,
             followed_by_me,
         })
+    }
+
+    pub async fn followers(&self, username: &str, after: Option<UserId>, limit: usize) -> Result<Page<UserView, UserId>> {
+        let user = self.user_named(username).await?;
+        let ids = self.stores.graph.followers_page(user.id, after, limit).await?;
+        self.user_page(ids, limit).await
+    }
+
+    pub async fn following(&self, username: &str, after: Option<UserId>, limit: usize) -> Result<Page<UserView, UserId>> {
+        let user = self.user_named(username).await?;
+        let ids = self.stores.graph.following_page(user.id, after, limit).await?;
+        self.user_page(ids, limit).await
+    }
+
+    /// Loads users for `ids`, keeping their order.
+    async fn user_page(&self, ids: Vec<UserId>, limit: usize) -> Result<Page<UserView, UserId>> {
+        let next = if ids.len() >= limit { ids.last().copied() } else { None };
+        let mut users: HashMap<UserId, User> =
+            self.stores.users.users_by_ids(&ids).await?.into_iter().map(|u| (u.id, u)).collect();
+        let items = ids.iter().filter_map(|id| users.remove(id)).map(Into::into).collect();
+        Ok(Page { items, next })
     }
 
     async fn user_named(&self, username: &str) -> Result<User> {
@@ -356,7 +491,15 @@ impl App {
         let liked: HashSet<PostId> = liked.into_iter().collect();
         let posts: HashMap<PostId, Post> = posts.into_iter().filter(|p| !p.deleted).map(|p| (p.id, p)).collect();
 
-        let mut author_ids: Vec<UserId> = posts.values().map(|p| p.author_id).collect();
+        // Parents of replies, for "replying to @name" (deleted parents still name their author).
+        let parent_ids: Vec<PostId> = posts.values().filter_map(|p| p.reply_to).collect();
+        let parents: HashMap<PostId, UserId> = if parent_ids.is_empty() {
+            HashMap::new()
+        } else {
+            self.stores.posts.get_many(&parent_ids).await?.into_iter().map(|p| (p.id, p.author_id)).collect()
+        };
+
+        let mut author_ids: Vec<UserId> = posts.values().map(|p| p.author_id).chain(parents.values().copied()).collect();
         author_ids.sort_unstable();
         author_ids.dedup();
         let authors: HashMap<UserId, User> =
@@ -372,9 +515,16 @@ impl App {
                     author: author.into(),
                     body: p.body.clone(),
                     reply_to: p.reply_to,
+                    replying_to: p
+                        .reply_to
+                        .and_then(|r| parents.get(&r))
+                        .and_then(|a| authors.get(a))
+                        .map(|u| u.username.clone()),
                     created_at: p.created_at,
                     like_count: p.like_count,
+                    reply_count: p.reply_count,
                     liked: liked.contains(&p.id),
+                    media: p.media.iter().cloned().map(Into::into).collect(),
                 })
             })
             .collect())

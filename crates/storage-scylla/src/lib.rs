@@ -18,7 +18,7 @@ use scylla::statement::batch::{Batch, BatchType};
 use scylla::statement::prepared::PreparedStatement;
 use scylla::statement::{Consistency, SerialConsistency};
 use scylla::value::{Counter, CqlValue, Row};
-use social_core::{id_timestamp_ms, now_ms, Error, Post, PostId, Result, User, UserId, UserStats, EPOCH_MS};
+use social_core::{id_timestamp_ms, now_ms, Error, MediaRef, Post, PostId, Result, User, UserId, UserStats, EPOCH_MS};
 use social_storage::{GraphStore, LikeStore, PostStore, SessionStore, Stores, UserStore};
 use std::sync::Arc;
 
@@ -32,16 +32,21 @@ const MAX_TTL_SECS: i64 = 630_720_000;
 
 const TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS users (
-       id bigint PRIMARY KEY, username text, created_at bigint)",
+       id bigint PRIMARY KEY, username text, created_at bigint, display_name text, bio text)",
     "CREATE TABLE IF NOT EXISTS users_by_name (
-       username_lower text PRIMARY KEY, id bigint, username text, created_at bigint, pass text)",
+       username_lower text PRIMARY KEY, id bigint, username text, created_at bigint, pass text,
+       display_name text, bio text)",
     "CREATE TABLE IF NOT EXISTS user_stats (
        id bigint PRIMARY KEY, followers counter, following counter, posts counter)",
     "CREATE TABLE IF NOT EXISTS sessions (
        token_hash blob PRIMARY KEY, user_id bigint, expires_at bigint)",
     "CREATE TABLE IF NOT EXISTS posts (
-       id bigint PRIMARY KEY, author_id bigint, body text, reply_to bigint, created_at bigint, deleted boolean)",
-    "CREATE TABLE IF NOT EXISTS post_likes (id bigint PRIMARY KEY, likes counter)",
+       id bigint PRIMARY KEY, author_id bigint, body text, reply_to bigint, created_at bigint, deleted boolean,
+       media text)",
+    // Per-post counters (named for its first column).
+    "CREATE TABLE IF NOT EXISTS post_likes (id bigint PRIMARY KEY, likes counter, replies counter)",
+    "CREATE TABLE IF NOT EXISTS post_replies (
+       parent_id bigint, post_id bigint, PRIMARY KEY (parent_id, post_id))",
     "CREATE TABLE IF NOT EXISTS user_posts (
        author_id bigint, post_id bigint, PRIMARY KEY (author_id, post_id))
      WITH CLUSTERING ORDER BY (post_id DESC)",
@@ -57,6 +62,17 @@ const TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS user_likes (
        user_id bigint, post_id bigint, PRIMARY KEY (user_id, post_id))
      WITH CLUSTERING ORDER BY (post_id DESC)",
+];
+
+/// Columns added after a table was first released: `(table, column, type)`. Keyspaces
+/// created earlier get them via `ALTER TABLE` on startup.
+const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    ("users", "display_name", "text"),
+    ("users", "bio", "text"),
+    ("users_by_name", "display_name", "text"),
+    ("users_by_name", "bio", "text"),
+    ("post_likes", "replies", "counter"),
+    ("posts", "media", "text"),
 ];
 
 #[derive(Clone, Debug)]
@@ -80,6 +96,7 @@ struct Statements {
     users_in: PreparedStatement,
     stats: PreparedStatement,
     followers_in: PreparedStatement,
+    set_profile: Batch,
     add_stats: Batch,
     add_posts: PreparedStatement,
 
@@ -89,8 +106,13 @@ struct Statements {
 
     ins_post: Batch,
     posts_in: PreparedStatement,
-    likes_in: PreparedStatement,
+    counts_in: PreparedStatement,
     tombstone: PreparedStatement,
+    reply_to: PreparedStatement,
+    ins_reply: PreparedStatement,
+    del_reply: PreparedStatement,
+    add_replies: PreparedStatement,
+    replies: PreparedStatement,
     unindex_post: Batch,
     author_posts: PreparedStatement,
     day_posts: PreparedStatement,
@@ -103,6 +125,7 @@ struct Statements {
     is_following: PreparedStatement,
     following: PreparedStatement,
     following_all: PreparedStatement,
+    following_page: PreparedStatement,
     followers_page: PreparedStatement,
 
     ins_user_like: PreparedStatement,
@@ -222,6 +245,19 @@ async fn create_schema(session: &Session, ks: &str, rf: u8) -> Result<()> {
         session.query_unpaged(cql, ()).await.map_err(db)?;
     }
     session.await_schema_agreement().await.map_err(db)?;
+    for (table, column, kind) in ADDED_COLUMNS {
+        let existing = session
+            .query_unpaged(
+                "SELECT column_name FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ? AND column_name = ?",
+                (ks, *table, *column),
+            )
+            .await
+            .map_err(db)?;
+        if rows::<(String,)>(existing)?.is_empty() {
+            session.query_unpaged(format!("ALTER TABLE {ks}.{table} ADD {column} {kind}"), ()).await.map_err(db)?;
+        }
+    }
+    session.await_schema_agreement().await.map_err(db)?;
     Ok(())
 }
 
@@ -237,9 +273,17 @@ impl Statements {
         add_stats.append_statement(prep_owned(s, add_stat("following"), false).await?);
         add_stats.append_statement(prep_owned(s, add_stat("followers"), false).await?);
 
+        let mut set_profile = Batch::new(BatchType::Logged);
+        set_profile.append_statement(write("UPDATE users SET display_name = ?, bio = ? WHERE id = ?").await?);
+        set_profile.append_statement(write("UPDATE users_by_name SET display_name = ?, bio = ? WHERE username_lower = ?").await?);
+        set_profile.set_is_idempotent(true);
+
         let mut ins_post = Batch::new(BatchType::Logged);
         ins_post.append_statement(
-            write("INSERT INTO posts (id, author_id, body, reply_to, created_at, deleted) VALUES (?, ?, ?, ?, ?, false)").await?,
+            write(
+                "INSERT INTO posts (id, author_id, body, reply_to, created_at, deleted, media) VALUES (?, ?, ?, ?, ?, false, ?)",
+            )
+            .await?,
         );
         ins_post.append_statement(write("INSERT INTO user_posts (author_id, post_id) VALUES (?, ?)").await?);
         ins_post.append_statement(write("INSERT INTO posts_by_day (day, post_id) VALUES (?, ?)").await?);
@@ -252,16 +296,24 @@ impl Statements {
 
         Ok(Self {
             ins_name: once(
-                "INSERT INTO users_by_name (username_lower, id, username, created_at, pass) VALUES (?, ?, ?, ?, ?) IF NOT EXISTS",
+                "INSERT INTO users_by_name (username_lower, id, username, created_at, pass, display_name, bio)
+                 VALUES (?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS",
             )
             .await?,
-            ins_user: write("INSERT INTO users (id, username, created_at) VALUES (?, ?, ?)").await?,
-            user_by_id: read("SELECT id, username, created_at FROM users WHERE id = ?").await?,
-            user_by_name: read("SELECT id, username, created_at FROM users_by_name WHERE username_lower = ?").await?,
-            credentials: read("SELECT id, username, created_at, pass FROM users_by_name WHERE username_lower = ?").await?,
-            users_in: read("SELECT id, username, created_at FROM users WHERE id IN ?").await?,
+            ins_user: write("INSERT INTO users (id, username, created_at, display_name, bio) VALUES (?, ?, ?, ?, ?)").await?,
+            user_by_id: read("SELECT id, username, created_at, display_name, bio FROM users WHERE id = ?").await?,
+            user_by_name: read(
+                "SELECT id, username, created_at, display_name, bio FROM users_by_name WHERE username_lower = ?",
+            )
+            .await?,
+            credentials: read(
+                "SELECT id, username, created_at, display_name, bio, pass FROM users_by_name WHERE username_lower = ?",
+            )
+            .await?,
+            users_in: read("SELECT id, username, created_at, display_name, bio FROM users WHERE id IN ?").await?,
             stats: read("SELECT followers, following, posts FROM user_stats WHERE id = ?").await?,
             followers_in: read("SELECT id, followers FROM user_stats WHERE id IN ?").await?,
+            set_profile,
             add_stats,
             add_posts: prep_owned(s, add_stat("posts"), false).await?,
 
@@ -270,9 +322,17 @@ impl Statements {
             del_session: write("DELETE FROM sessions WHERE token_hash = ?").await?,
 
             ins_post,
-            posts_in: read("SELECT id, author_id, body, reply_to, created_at, deleted FROM posts WHERE id IN ?").await?,
-            likes_in: read("SELECT id, likes FROM post_likes WHERE id IN ?").await?,
-            tombstone: once("UPDATE posts SET deleted = true, body = '' WHERE id = ? IF author_id = ? AND deleted = false").await?,
+            posts_in: read("SELECT id, author_id, body, reply_to, created_at, deleted, media FROM posts WHERE id IN ?").await?,
+            counts_in: read("SELECT id, likes, replies FROM post_likes WHERE id IN ?").await?,
+            tombstone: once(
+                "UPDATE posts SET deleted = true, body = '', media = '[]' WHERE id = ? IF author_id = ? AND deleted = false",
+            )
+            .await?,
+            reply_to: read("SELECT reply_to FROM posts WHERE id = ?").await?,
+            ins_reply: write("INSERT INTO post_replies (parent_id, post_id) VALUES (?, ?)").await?,
+            del_reply: write("DELETE FROM post_replies WHERE parent_id = ? AND post_id = ?").await?,
+            add_replies: once("UPDATE post_likes SET replies = replies + ? WHERE id = ?").await?,
+            replies: read("SELECT post_id FROM post_replies WHERE parent_id = ? AND post_id > ? LIMIT ?").await?,
             unindex_post,
             author_posts: read("SELECT post_id FROM user_posts WHERE author_id = ? AND post_id < ? LIMIT ?").await?,
             day_posts: read("SELECT post_id FROM posts_by_day WHERE day = ? AND post_id < ? LIMIT ?").await?,
@@ -285,6 +345,7 @@ impl Statements {
             is_following: read("SELECT followee_id FROM following WHERE user_id = ? AND followee_id = ?").await?,
             following: read("SELECT followee_id FROM following WHERE user_id = ? LIMIT ?").await?,
             following_all: read("SELECT followee_id FROM following WHERE user_id = ?").await?,
+            following_page: read("SELECT followee_id FROM following WHERE user_id = ? AND followee_id > ? LIMIT ?").await?,
             followers_page: read("SELECT follower_id FROM followers WHERE user_id = ? AND follower_id > ? LIMIT ?").await?,
 
             ins_user_like: once("INSERT INTO user_likes (user_id, post_id) VALUES (?, ?) IF NOT EXISTS").await?,
@@ -335,6 +396,10 @@ fn day_of(id: PostId) -> i32 {
     day_of_ms(id_timestamp_ms(id.0))
 }
 
+fn media_json(media: &[MediaRef]) -> String {
+    serde_json::to_string(media).expect("media refs serialize")
+}
+
 fn cursor(before: Option<PostId>) -> i64 {
     before.map_or(i64::MAX, |p| p.0)
 }
@@ -347,10 +412,16 @@ fn count(c: Option<Counter>) -> i64 {
     c.map_or(0, |c| c.0)
 }
 
-type UserRow = (i64, String, i64);
+type UserRow = (i64, String, i64, Option<String>, Option<String>);
 
 fn user(r: UserRow) -> User {
-    User { id: UserId(r.0), username: r.1, created_at: r.2 }
+    User {
+        id: UserId(r.0),
+        username: r.1,
+        created_at: r.2,
+        display_name: r.3.unwrap_or_default(),
+        bio: r.4.unwrap_or_default(),
+    }
 }
 
 #[async_trait]
@@ -358,12 +429,16 @@ impl UserStore for ScyllaStore {
     async fn create_user(&self, user: &User, pass_hash: &str) -> Result<()> {
         let lower = user.username.to_ascii_lowercase();
         let res = self
-            .exec(&self.q.ins_name, (lower, user.id.0, &user.username, user.created_at, pass_hash))
+            .exec(
+                &self.q.ins_name,
+                (lower, user.id.0, &user.username, user.created_at, pass_hash, &user.display_name, &user.bio),
+            )
             .await?;
         if !applied(res)? {
             return Err(Error::Conflict("username taken"));
         }
-        self.exec(&self.q.ins_user, (user.id.0, &user.username, user.created_at)).await?;
+        self.exec(&self.q.ins_user, (user.id.0, &user.username, user.created_at, &user.display_name, &user.bio))
+            .await?;
         Ok(())
     }
 
@@ -376,10 +451,9 @@ impl UserStore for ScyllaStore {
     }
 
     async fn credentials(&self, username: &str) -> Result<Option<(User, String)>> {
-        let row = self
-            .row::<(i64, String, i64, String)>(&self.q.credentials, (username.to_ascii_lowercase(),))
-            .await?;
-        Ok(row.map(|(id, name, created_at, pass)| (user((id, name, created_at)), pass)))
+        type CredRow = (i64, String, i64, Option<String>, Option<String>, String);
+        let row = self.row::<CredRow>(&self.q.credentials, (username.to_ascii_lowercase(),)).await?;
+        Ok(row.map(|(id, name, created_at, display, bio, pass)| (user((id, name, created_at, display, bio)), pass)))
     }
 
     async fn users_by_ids(&self, ids: &[UserId]) -> Result<Vec<User>> {
@@ -397,6 +471,15 @@ impl UserStore for ScyllaStore {
             None if self.user_by_id(id).await?.is_some() => Ok(UserStats::default()),
             None => Err(Error::NotFound("user")),
         }
+    }
+
+    async fn update_profile(&self, user: &User) -> Result<()> {
+        let lower = user.username.to_ascii_lowercase();
+        self.batch(
+            &self.q.set_profile,
+            ((&user.display_name, &user.bio, user.id.0), (&user.display_name, &user.bio, lower)),
+        )
+        .await
     }
 }
 
@@ -438,34 +521,42 @@ impl PostStore for ScyllaStore {
         self.batch(
             &self.q.ins_post,
             (
-                (p.id.0, p.author_id.0, &p.body, p.reply_to.map(|r| r.0), p.created_at),
+                (p.id.0, p.author_id.0, &p.body, p.reply_to.map(|r| r.0), p.created_at, media_json(&p.media)),
                 (p.author_id.0, p.id.0),
                 (day_of(p.id), p.id.0),
             ),
         )
         .await?;
+        if let Some(parent) = p.reply_to {
+            self.exec(&self.q.ins_reply, (parent.0, p.id.0)).await?;
+            self.exec(&self.q.add_replies, (Counter(1), parent.0)).await?;
+        }
         self.add_posts(p.author_id, 1).await
     }
 
     async fn get_many(&self, ids: &[PostId]) -> Result<Vec<Post>> {
-        type PostRow = (i64, i64, String, Option<i64>, i64, Option<bool>);
+        type PostRow = (i64, i64, String, Option<i64>, i64, Option<bool>, Option<String>);
         let ids: Vec<i64> = ids.iter().map(|p| p.0).collect();
-        let (posts, likes) = futures_util::try_join!(
+        let (posts, counts) = futures_util::try_join!(
             self.rows_in::<PostRow, _>(&self.q.posts_in, (), &ids),
-            self.rows_in::<(i64, Option<Counter>), _>(&self.q.likes_in, (), &ids),
+            self.rows_in::<(i64, Option<Counter>, Option<Counter>), _>(&self.q.counts_in, (), &ids),
         )?;
-        let likes: std::collections::HashMap<i64, i64> = likes.into_iter().map(|(id, n)| (id, count(n))).collect();
+        let counts: std::collections::HashMap<i64, (i64, i64)> =
+            counts.into_iter().map(|(id, likes, replies)| (id, (count(likes), count(replies)))).collect();
         Ok(posts
             .into_iter()
-            .map(|(id, author_id, body, reply_to, created_at, deleted)| Post {
+            .map(|(id, author_id, body, reply_to, created_at, deleted, media)| Post {
                 id: PostId(id),
                 author_id: UserId(author_id),
                 body,
                 reply_to: reply_to.map(PostId),
                 created_at,
                 // Counter deltas are applied without a floor; clamp on read instead.
-                like_count: likes.get(&id).copied().unwrap_or(0).max(0),
+                like_count: counts.get(&id).map_or(0, |c| c.0.max(0)),
+                reply_count: counts.get(&id).map_or(0, |c| c.1.max(0)),
                 deleted: deleted.unwrap_or(false),
+                // Rows written before images existed have no value.
+                media: media.and_then(|m| serde_json::from_str(&m).ok()).unwrap_or_default(),
             })
             .collect())
     }
@@ -476,6 +567,10 @@ impl PostStore for ScyllaStore {
         }
         self.batch(&self.q.unindex_post, ((author.0, id.0), (day_of(id), id.0))).await?;
         self.add_posts(author, -1).await?;
+        if let Some((Some(parent),)) = self.row::<(Option<i64>,)>(&self.q.reply_to, (id.0,)).await? {
+            self.exec(&self.q.del_reply, (parent, id.0)).await?;
+            self.exec(&self.q.add_replies, (Counter(-1), parent)).await?;
+        }
         Ok(true)
     }
 
@@ -507,6 +602,12 @@ impl PostStore for ScyllaStore {
             day -= 1;
         }
         Ok(out)
+    }
+
+    async fn replies(&self, parent: PostId, after: Option<PostId>, limit: usize) -> Result<Vec<PostId>> {
+        let after = after.map_or(i64::MIN, |p| p.0);
+        let rows = self.rows::<(i64,)>(&self.q.replies, (parent.0, after, limit_i32(limit))).await?;
+        Ok(rows.into_iter().map(|(id,)| PostId(id)).collect())
     }
 
     async fn apply_like_deltas(&self, deltas: &[(PostId, i64)]) -> Result<()> {
@@ -542,6 +643,12 @@ impl GraphStore for ScyllaStore {
 
     async fn following(&self, user: UserId, limit: usize) -> Result<Vec<UserId>> {
         let rows = self.rows::<(i64,)>(&self.q.following, (user.0, limit_i32(limit))).await?;
+        Ok(rows.into_iter().map(|(id,)| UserId(id)).collect())
+    }
+
+    async fn following_page(&self, user: UserId, after: Option<UserId>, limit: usize) -> Result<Vec<UserId>> {
+        let after = after.map_or(i64::MIN, |u| u.0);
+        let rows = self.rows::<(i64,)>(&self.q.following_page, (user.0, after, limit_i32(limit))).await?;
         Ok(rows.into_iter().map(|(id,)| UserId(id)).collect())
     }
 

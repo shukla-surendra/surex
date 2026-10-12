@@ -11,10 +11,14 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -p social \
- && cp target/release/social /social
+ && cp target/release/social /social \
+ && mkdir -p /media
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=build /social /usr/local/bin/social
-ENV SOCIAL_ADDR=0.0.0.0:3000
+# Uploaded images. Created here so a named volume mounted on it is writable by nonroot.
+COPY --from=build --chown=nonroot:nonroot /media /var/lib/social/media
+ENV SOCIAL_ADDR=0.0.0.0:3000 \
+    SOCIAL_MEDIA_DIR=/var/lib/social/media
 EXPOSE 3000
 ENTRYPOINT ["/usr/local/bin/social"]

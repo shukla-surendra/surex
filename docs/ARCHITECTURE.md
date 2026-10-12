@@ -179,6 +179,7 @@ my_social/
 │   ├── storage/         ✅ ports: UserStore, SessionStore, PostStore, GraphStore, LikeStore
 │   ├── storage-sqlite/  ✅ impl for dev and single box
 │   ├── storage-scylla/  ✅ impl for cluster (scylla crate)
+│   ├── storage-fs/      ✅ MediaStore on local disk | ⏳ S3/MinIO for clusters
 │   ├── cache/           ✅ TimelineCache port + in-proc impl (moka, TinyLFU) | ⏳ Dragonfly (fred)
 │   ├── events/          ✅ EventBus port + in-proc impl | ⏳ Redpanda (rdkafka)
 │   ├── services/        ✅ identity, posts, likes, graph, timelines + fanout & counter workers

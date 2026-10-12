@@ -21,6 +21,16 @@ cargo run --release -p social -- --help  # all flags (also listed in SPEC §10)
 cd frontend && npm install && npm run dev  # UI on http://localhost:5173, proxies /api to :3000
 ```
 
+### Demo data
+
+```sh
+SOCIAL_NO_RATE_LIMIT=true docker compose up -d social   # seed without rate limits
+python3 scripts/seed.py   # demo users, posts, replies, likes + bulk data for pagination
+docker compose up -d social                              # rate limits back on
+```
+
+Logins are in [`docs/DEMO_USERS.md`](docs/DEMO_USERS.md) (password `surex-demo-123`).
+
 ### With Docker Compose (frontend + backend + ScyllaDB)
 
 ```sh
@@ -64,11 +74,14 @@ scripts/loadtest.sh                      # needs `cargo install oha`; start with
 | `crates/storage` | Storage traits |
 | `crates/storage-sqlite` | SQLite implementation |
 | `crates/storage-scylla` | ScyllaDB implementation |
+| `crates/storage-fs` | Uploaded images on local disk |
 | `crates/cache` | Timeline cache trait + in-process implementation |
 | `crates/events` | Event bus trait + in-process implementation |
 | `crates/services` | Business logic, fan-out and counter workers |
 | `crates/gateway` | HTTP API (axum) |
 | `bin/social` | The single server binary |
+| `scripts/seed.py`, `fixtures/` | Demo data loader and fixtures (users, posts, images) |
+| `scripts/gen_fixture_images.py` | Draws the fixture images (stdlib only) |
 | `frontend/` | React + TypeScript web client (Vite); nginx serves it in Docker |
 
 ## Production builds
