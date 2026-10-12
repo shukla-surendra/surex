@@ -1,0 +1,79 @@
+#!/bin/bash
+# Boots the surex stack with Docker Compose. Logs: /var/log/surex-boot.log
+set -euo pipefail
+exec > >(tee -a /var/log/surex-boot.log) 2>&1
+echo "[surex] boot $(date -Is)"
+
+# Scylla needs more async-I/O slots than the kernel default.
+echo 'fs.aio-max-nr = 1048576' > /etc/sysctl.d/90-scylla.conf
+sysctl --system >/dev/null
+
+dnf install -y docker
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+  https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-aarch64
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+systemctl enable --now docker
+
+mkdir -p /opt/surex
+cat > /opt/surex/docker-compose.yml <<'COMPOSE'
+services:
+  scylla:
+    image: scylladb/scylla:2025.1
+    command: --smp 1 --memory 1G --overprovisioned 1 --developer-mode 1
+    volumes:
+      - scylla-data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "SELECT now() FROM system.local"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 30
+    restart: unless-stopped
+
+  social:
+    image: ${social_image}
+    depends_on:
+      scylla:
+        condition: service_healthy
+    environment:
+      SOCIAL_STORE: scylla
+      SOCIAL_SCYLLA_NODES: scylla:9042
+      SOCIAL_SCYLLA_KEYSPACE: social
+      SOCIAL_SCYLLA_RF: "1"
+      SOCIAL_WORKER_ID: "0"
+      SOCIAL_TRUST_PROXY: "true"
+      SOCIAL_NO_RATE_LIMIT: "${disable_rate_limit}"
+      RUST_LOG: info
+    volumes:
+      - media-data:/var/lib/social/media
+    restart: unless-stopped
+
+  web:
+    image: ${web_image}
+    depends_on:
+      - social
+    ports:
+      - "80:80"
+    restart: unless-stopped
+
+volumes:
+  scylla-data:
+  media-data:
+COMPOSE
+
+# The app images are pushed after the instance is created, so keep trying for up to
+# 30 minutes. ECR tokens last 12 hours; log in again on every attempt.
+cd /opt/surex
+for attempt in $(seq 1 90); do
+  if aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin ${registry} \
+    && docker compose pull; then
+    docker compose up -d
+    echo "[surex] stack started $(date -Is)"
+    exit 0
+  fi
+  echo "[surex] images not available yet (attempt $attempt); retrying in 20s"
+  sleep 20
+done
+echo "[surex] gave up waiting for images"
+exit 1
