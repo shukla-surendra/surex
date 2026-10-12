@@ -1,0 +1,22 @@
+[package]
+name = "social-services"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+argon2.workspace = true
+hex.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+sha2.workspace = true
+social-cache.workspace = true
+social-core.workspace = true
+social-events.workspace = true
+social-storage.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+social-storage-sqlite.workspace = true
+tempfile.workspace = true

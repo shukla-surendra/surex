@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "bin/social"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+social-core = { path = "crates/core" }
+social-storage = { path = "crates/storage" }
+social-storage-sqlite = { path = "crates/storage-sqlite" }
+social-cache = { path = "crates/cache" }
+social-events = { path = "crates/events" }
+social-services = { path = "crates/services" }
+social-gateway = { path = "crates/gateway" }
+
+argon2 = "0.5"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["macros"] }
+clap = { version = "4", features = ["derive", "env"] }
+dashmap = "6"
+hex = "0.4"
+mimalloc = "0.1"
+moka = { version = "0.12", features = ["sync"] }
+r2d2 = "0.8"
+rand_core = { version = "0.6", features = ["getrandom"] }
+r2d2_sqlite = "0.25"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["compression-gzip", "compression-br", "request-id", "trace", "util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Password hashing is deliberately expensive; keep debug builds and tests usable.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

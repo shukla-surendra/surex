@@ -1,0 +1,13 @@
+[package]
+name = "social-cache"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+moka.workspace = true
+social-core.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "social-events"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+social-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true

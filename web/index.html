@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>my_social</title>
+<style>
+:root{--bg:#fff;--fg:#0f1419;--mut:#536471;--line:#eff3f4;--ac:#1d9bf0;--like:#f91880;--err:#f4212e}
+@media(prefers-color-scheme:dark){:root{--bg:#000;--fg:#e7e9ea;--mut:#71767b;--line:#2f3336}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,sans-serif}
+main{max-width:600px;margin:0 auto;border:1px solid var(--line);border-top:0;min-height:100vh}
+header{position:sticky;top:0;z-index:1;background:var(--bg);border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center;padding:10px 16px}
+header a{flex:1;font-size:18px;font-weight:700}
+a{color:inherit;text-decoration:none}a:hover{text-decoration:underline}
+button{font:inherit;border:0;border-radius:999px;padding:6px 16px;background:var(--ac);color:#fff;font-weight:600;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+button.o{background:none;color:var(--fg);border:1px solid var(--line)}
+button.g{background:none;color:var(--mut);padding:2px 8px;font-weight:400}button.g.on{color:var(--like)}
+nav{display:flex;border-bottom:1px solid var(--line)}
+nav a{flex:1;text-align:center;padding:12px;color:var(--mut)}nav a.on{color:var(--fg);font-weight:700;box-shadow:inset 0 -3px var(--ac)}
+input,textarea{font:inherit;width:100%;background:none;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px;margin:4px 0}
+textarea{resize:none;border:0;outline:0;padding:4px 0}
+.box{padding:12px 16px;border-bottom:1px solid var(--line)}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.u{font-weight:700}.m{color:var(--mut)}.c{text-align:center}
+.p{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0}
+.pn{font-size:20px;font-weight:800}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--err);color:#fff;padding:8px 16px;border-radius:8px}
+</style></head><body><main>
+<header><a href="#/">my_social</a><a id="who" class="m" style="flex:0"></a><button id="out" class="o" hidden>Log out</button></header>
+<section id="auth" class="box" hidden>
+  <input id="un" placeholder="username" autocomplete="username" maxlength="20">
+  <input id="pw" type="password" placeholder="password (8+ characters)" autocomplete="current-password">
+  <div class="row"><span class="m">Log in or create an account</span><span><button id="li">Log in</button> <button id="su" class="o">Sign up</button></span></div>
+</section>
+<section id="comp" class="box" hidden>
+  <textarea id="body" rows="3" maxlength="280" placeholder="What's happening?"></textarea>
+  <div class="row"><span id="cnt" class="m">280</span><button id="send">Post</button></div>
+</section>
+<section id="prof" class="box" hidden>
+  <div class="row"><div><div id="pname" class="pn"></div><div id="pstats" class="m"></div></div><button id="pfollow" hidden></button></div>
+</section>
+<nav id="tabs"><a href="#/home" data-v="home">Following</a><a href="#/" data-v="global">Everyone</a></nav>
+<div id="feed"></div>
+<div id="more" class="box c" hidden><button id="mb" class="g">Load more</button></div>
+<div id="empty" class="box c m" hidden>Nothing here yet.</div>
+<div id="toast" hidden></div>
+</main><script>
+'use strict';
+const $ = id => document.getElementById(id);
+let me = null, view = {kind: 'global'}, next = null, gen = 0, profile = null;
+
+async function api(method, path, body) {
+  const r = await fetch('/api/v1' + path, {method, headers: body ? {'content-type': 'application/json'} : {}, body: body ? JSON.stringify(body) : undefined});
+  if (r.status === 204) return null;
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error?.message || 'HTTP ' + r.status);
+  return j;
+}
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function ago(ms) { const s = (Date.now() - ms) / 1e3; return s < 60 ? 'now' : s < 3600 ? (s / 60 | 0) + 'm' : s < 86400 ? (s / 3600 | 0) + 'h' : new Date(ms).toLocaleDateString(); }
+let toastTimer;
+function toast(msg) { $('toast').textContent = msg; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 3000); }
+const guard = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message); } };
+
+function postEl(p) {
+  const d = el('article', 'box'), h = el('div', 'row'), a = el('a', 'u', '@' + p.author.username);
+  a.href = '#/@' + encodeURIComponent(p.author.username);
+  h.append(a, el('span', 'm', ago(p.created_at)));
+  d.append(h, el('div', 'p', p.body));
+  const actions = el('div', 'row'), like = el('button', 'g');
+  const paint = () => { like.className = 'g' + (p.liked ? ' on' : ''); like.textContent = (p.liked ? '♥ ' : '♡ ') + p.like_count; };
+  paint();
+  like.onclick = guard(async () => {
+    if (!me) return toast('Log in to like posts');
+    p.liked = !p.liked; p.like_count += p.liked ? 1 : -1; paint();
+    try { await api(p.liked ? 'PUT' : 'DELETE', `/posts/${p.id}/like`); }
+    catch (e) { p.liked = !p.liked; p.like_count += p.liked ? 1 : -1; paint(); throw e; }
+  });
+  actions.append(like);
+  if (me && p.author.id === me.id) {
+    const del = el('button', 'g', 'delete');
+    del.onclick = guard(async () => { if (confirm('Delete this post?')) { await api('DELETE', '/posts/' + p.id); d.remove(); } });
+    actions.append(del);
+  }
+  d.append(actions);
+  return d;
+}
+
+function feedPath() {
+  const q = next ? '?before=' + next : '';
+  if (view.kind === 'home') return '/timeline/home' + q;
+  if (view.kind === 'user') return '/users/' + encodeURIComponent(view.name) + '/posts' + q;
+  return '/timeline/global' + q;
+}
+
+async function load() {
+  const g = gen, page = await api('GET', feedPath());
+  if (g !== gen) return; // view changed while loading
+  const f = document.createDocumentFragment();
+  page.items.forEach(p => f.append(postEl(p)));
+  $('feed').append(f);
+  next = page.next;
+  $('more').hidden = !next;
+  $('empty').hidden = $('feed').children.length > 0 || !!next;
+}
+
+function paintProfile() {
+  $('pname').textContent = '@' + profile.username;
+  $('pstats').textContent = `${profile.followers} followers · ${profile.following} following · ${profile.posts} posts`;
+  const b = $('pfollow');
+  b.hidden = !me || me.id === profile.id;
+  b.textContent = profile.followed_by_me ? 'Unfollow' : 'Follow';
+  b.className = profile.followed_by_me ? 'o' : '';
+}
+
+async function render() {
+  gen++; next = null;
+  $('feed').replaceChildren(); $('more').hidden = $('empty').hidden = true;
+  $('auth').hidden = !!me; $('comp').hidden = !me; $('out').hidden = !me;
+  $('who').textContent = me ? '@' + me.username : ''; $('who').href = me ? '#/@' + me.username : '#/';
+  $('tabs').hidden = view.kind === 'user';
+  document.querySelectorAll('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.v === view.kind));
+  $('prof').hidden = view.kind !== 'user';
+  if (view.kind === 'user') { profile = await api('GET', '/users/' + encodeURIComponent(view.name)); paintProfile(); }
+  await load();
+}
+
+function route() {
+  const m = location.hash.match(/^#\/@(\w{1,20})$/);
+  view = m ? {kind: 'user', name: m[1]} : location.hash === '#/home' && me ? {kind: 'home'} : {kind: 'global'};
+  guard(render)();
+}
+
+async function auth(path) {
+  me = await api('POST', path, {username: $('un').value.trim(), password: $('pw').value});
+  $('pw').value = '';
+  if (location.hash === '#/home') route(); else location.hash = '#/home';
+}
+
+$('li').onclick = guard(() => auth('/auth/login'));
+$('su').onclick = guard(() => auth('/auth/register'));
+$('pw').onkeydown = e => { if (e.key === 'Enter') $('li').click(); };
+$('out').onclick = guard(async () => { await api('POST', '/auth/logout'); me = null; location.hash = '#/'; route(); });
+$('body').oninput = e => $('cnt').textContent = 280 - [...e.target.value].length;
+$('send').onclick = guard(async () => {
+  $('send').disabled = true;
+  try {
+    const p = await api('POST', '/posts', {body: $('body').value});
+    $('body').value = ''; $('cnt').textContent = 280;
+    if (view.kind !== 'user' || view.name.toLowerCase() === me.username.toLowerCase()) { $('feed').prepend(postEl(p)); $('empty').hidden = true; }
+  } finally { $('send').disabled = false; }
+});
+$('pfollow').onclick = guard(async () => {
+  const on = !profile.followed_by_me;
+  await api(on ? 'PUT' : 'DELETE', `/users/${encodeURIComponent(profile.username)}/follow`);
+  profile.followed_by_me = on; profile.followers += on ? 1 : -1; paintProfile();
+});
+$('mb').onclick = guard(load);
+window.onhashchange = route;
+
+(async () => {
+  try { me = await api('GET', '/me'); } catch {}
+  if (me && !location.hash) location.hash = '#/home'; else route();
+})();
+</script></body></html>

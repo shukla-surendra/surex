@@ -1,0 +1,6 @@
+# Local builds target the machine they run on. Production builds MUST override this
+# for the server fleet (docs/ARCHITECTURE.md §7.2), e.g.:
+#   RUSTFLAGS="-C target-cpu=x86-64-v4" cargo build --release   # AMD EPYC
+#   RUSTFLAGS="-C target-cpu=neoverse-n1" cargo build --release # Ampere Altra
+[build]
+rustflags = ["-C", "target-cpu=native"]
