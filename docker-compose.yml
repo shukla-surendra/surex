@@ -1,0 +1,50 @@
+# Local stack: React frontend (nginx), Rust backend API, and ScyllaDB.
+# The backend's timeline cache and event bus are in-process, so run one `social` replica.
+#
+#   docker compose up --build        # app on http://localhost:8080
+#   docker compose exec scylla cqlsh # inspect data
+#   docker compose down -v           # stop and delete the Scylla volume
+
+services:
+  scylla:
+    image: scylladb/scylla:2025.1
+    command: --smp 1 --memory 1G --overprovisioned 1 --developer-mode 1
+    volumes:
+      - scylla-data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "SELECT now() FROM system.local"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 30
+
+  # Backend: JSON API only, under /api/v1.
+  social:
+    build: .
+    depends_on:
+      scylla:
+        condition: service_healthy
+    environment:
+      SOCIAL_STORE: scylla
+      SOCIAL_SCYLLA_NODES: scylla:9042
+      SOCIAL_SCYLLA_KEYSPACE: social
+      SOCIAL_SCYLLA_RF: "1"
+      SOCIAL_WORKER_ID: "0"
+      # Requests arrive through the frontend's nginx; take the client IP from it.
+      SOCIAL_TRUST_PROXY: "true"
+      RUST_LOG: info
+    ports:
+      - "127.0.0.1:3000:3000" # direct API access for debugging
+    restart: on-failure
+
+  # Frontend: static React build; proxies /api to the backend.
+  web:
+    build: ./frontend
+    depends_on:
+      - social
+    ports:
+      - "8080:80"
+    restart: on-failure
+
+volumes:
+  scylla-data:

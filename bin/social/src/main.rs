@@ -6,6 +6,7 @@ use social_core::now_ms;
 use social_events::{EventBus, InProcBus};
 use social_gateway::{GatewayConfig, Limits};
 use social_services::{spawn_workers, App, Config, WorkerSet};
+use social_storage_scylla::{ScyllaConfig, ScyllaStore};
 use social_storage_sqlite::SqliteStore;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -21,7 +22,7 @@ struct Args {
     addr: SocketAddr,
     #[arg(long, env = "SOCIAL_ROLES", value_delimiter = ',', default_value = "all")]
     roles: Vec<Role>,
-    #[arg(long, value_enum, default_value = "sqlite")]
+    #[arg(long, env = "SOCIAL_STORE", value_enum, default_value = "sqlite")]
     store: StoreKind,
     #[arg(long, value_enum, default_value = "inproc")]
     cache: CacheKind,
@@ -31,6 +32,20 @@ struct Args {
     db: String,
     #[arg(long, default_value_t = 16)]
     db_pool: u32,
+    /// Scylla contact points (`host:port`, comma-separated).
+    #[arg(long, env = "SOCIAL_SCYLLA_NODES", value_delimiter = ',', default_value = "127.0.0.1:9042")]
+    scylla_nodes: Vec<String>,
+    #[arg(long, env = "SOCIAL_SCYLLA_KEYSPACE", default_value = "social")]
+    scylla_keyspace: String,
+    /// Replication factor, used only when the keyspace is first created.
+    #[arg(long, env = "SOCIAL_SCYLLA_RF", default_value_t = 1)]
+    scylla_rf: u8,
+    /// Local datacenter for request routing and LOCAL_QUORUM.
+    #[arg(long, env = "SOCIAL_SCYLLA_DC")]
+    scylla_dc: Option<String>,
+    /// Username for Scylla auth; the password is read from SOCIAL_SCYLLA_PASSWORD.
+    #[arg(long, env = "SOCIAL_SCYLLA_USER")]
+    scylla_user: Option<String>,
     #[arg(long, env = "SOCIAL_WORKER_ID", default_value_t = 0, value_parser = clap::value_parser!(u16).range(0..=1023))]
     worker_id: u16,
     #[arg(long, default_value_t = 100_000)]
@@ -41,7 +56,7 @@ struct Args {
     cache_users: u64,
     #[arg(long)]
     secure_cookies: bool,
-    #[arg(long)]
+    #[arg(long, env = "SOCIAL_TRUST_PROXY")]
     trust_proxy: bool,
     /// Disable per-IP rate limiting (benchmarks, or when the edge enforces limits).
     #[arg(long)]
@@ -61,6 +76,7 @@ enum Role {
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum StoreKind {
     Sqlite,
+    Scylla,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -86,6 +102,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let stores = match args.store {
         StoreKind::Sqlite => SqliteStore::open(&args.db, args.db_pool)?.into_stores(),
+        StoreKind::Scylla => {
+            let credentials = args
+                .scylla_user
+                .clone()
+                .map(|user| (user, std::env::var("SOCIAL_SCYLLA_PASSWORD").unwrap_or_default()));
+            let cfg = ScyllaConfig {
+                nodes: args.scylla_nodes.clone(),
+                keyspace: args.scylla_keyspace.clone(),
+                replication_factor: args.scylla_rf,
+                datacenter: args.scylla_dc.clone(),
+                credentials,
+            };
+            tracing::info!(nodes = ?cfg.nodes, keyspace = %cfg.keyspace, "connecting to scylla");
+            ScyllaStore::open(&cfg).await?.into_stores()
+        }
     };
     let cache: Arc<dyn TimelineCache> = match args.cache {
         CacheKind::Inproc => Arc::new(InProcTimelineCache::new(args.cache_users, args.timeline_cap)),

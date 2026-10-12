@@ -178,14 +178,14 @@ my_social/
 │   ├── core/            ✅ domain types, Snowflake IdGen, validation, events, errors (no I/O)
 │   ├── storage/         ✅ ports: UserStore, SessionStore, PostStore, GraphStore, LikeStore
 │   ├── storage-sqlite/  ✅ impl for dev and single box
-│   ├── storage-scylla/  ⏳ impl for cluster (scylla crate)
+│   ├── storage-scylla/  ✅ impl for cluster (scylla crate)
 │   ├── cache/           ✅ TimelineCache port + in-proc impl (moka, TinyLFU) | ⏳ Dragonfly (fred)
 │   ├── events/          ✅ EventBus port + in-proc impl | ⏳ Redpanda (rdkafka)
 │   ├── services/        ✅ identity, posts, likes, graph, timelines + fanout & counter workers
 │   ├── gateway/         ✅ HTTP API, sessions, rate limit, request ids, tracing | ⏳ websocket
 │   └── proto/           ⏳ gRPC definitions (tonic-build), once services are split
 ├── bin/social/          ✅ ONE binary: `social --roles=all` (or gateway,fanout,counters)
-├── web/                 ✅ frontend (single static page, embedded in the binary)
+├── frontend/            ✅ React + TypeScript client (Vite), served separately (nginx/CDN)
 ├── scripts/             ✅ loadtest.sh (oha)
 └── deploy/              ⏳ Ansible / Nomad jobs, kernel tuning, dashboards
 ```
@@ -200,8 +200,9 @@ crates at Phase 3, when they become separately deployed fleets.
 - `--roles=fanout` / `--roles=gateway` ... → separate fleets at scale. Services talk
   through traits. In-process calls become gRPC by swapping the client implementation.
 
-Frontend: keep the zero-framework approach (or SolidJS if the UI grows), ship static
-assets through a CDN, and use the HTTP JSON API for the browser. Mobile clients can
+Frontend: a React + TypeScript app (`frontend/`), built to static assets and served
+separately from the API (nginx locally, a CDN in production) on the same origin, so the
+`SameSite=Strict` session cookie works without CORS. Mobile clients can
 use the same API or gRPC-web.
 
 ---
@@ -336,7 +337,7 @@ must be validated by load tests.
 
 | Today | Target |
 |---|---|
-| Only SQLite, in-proc cache and in-proc bus implementations | Scylla, Dragonfly and Redpanda behind the same traits (Phase 2) |
+| SQLite and Scylla storage; only in-proc cache and bus | Dragonfly and Redpanda behind the same traits (Phase 2) |
 | `--roles` other than `all` need an external bus | Separate fleets once Redpanda lands |
 | Logs only | Prometheus metrics + OpenTelemetry traces |
 | Per-node rate limits | Shared buckets in Dragonfly |

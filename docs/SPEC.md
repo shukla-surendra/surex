@@ -161,8 +161,9 @@ UUID, and appears in server logs.
 | `PUT /users/{username}/follow` | 🔒 | — | `204` (idempotent) |
 | `DELETE /users/{username}/follow` | 🔒 | — | `204` (idempotent) |
 
-Operational endpoints (outside `/api/v1`): `GET /` (web app) and `GET /healthz`
-(`200 ok`).
+Operational endpoint (outside `/api/v1`): `GET /healthz` (`200 ok`). The web client is
+a separate React app (`frontend/`) served from the same origin, which proxies `/api`
+here.
 
 Likes and follows use **PUT/DELETE** (set and unset) rather than a toggle. Retries are
 safe, and clients never race themselves.
@@ -262,17 +263,22 @@ Partition key at cluster scale: `author_id` / `follower` / `post_id` respectivel
 |---|---|---|---|
 | `--addr` | `SOCIAL_ADDR` | `127.0.0.1:3000` | Listen address |
 | `--roles` | `SOCIAL_ROLES` | `all` | Any of `all,gateway,fanout,counters` |
-| `--store` | — | `sqlite` | Storage backend (`scylla` planned) |
+| `--store` | `SOCIAL_STORE` | `sqlite` | Storage backend: `sqlite` or `scylla` |
 | `--cache` | — | `inproc` | Timeline cache (`dragonfly` planned) |
 | `--bus` | — | `inproc` | Event bus (`redpanda` planned). `inproc` requires `--roles=all` |
 | `--db` | `SOCIAL_DB` | `social.db` | SQLite path |
 | `--db-pool` | — | `16` | SQLite connection pool size |
+| `--scylla-nodes` | `SOCIAL_SCYLLA_NODES` | `127.0.0.1:9042` | Scylla contact points, comma-separated |
+| `--scylla-keyspace` | `SOCIAL_SCYLLA_KEYSPACE` | `social` | Keyspace; created with all tables on first start |
+| `--scylla-rf` | `SOCIAL_SCYLLA_RF` | `1` | Replication factor, used only when the keyspace is created (3 in production) |
+| `--scylla-dc` | `SOCIAL_SCYLLA_DC` | — | Local datacenter for routing and `LOCAL_QUORUM` |
+| `--scylla-user` | `SOCIAL_SCYLLA_USER` | — | Scylla username; password from `SOCIAL_SCYLLA_PASSWORD` |
 | `--worker-id` | `SOCIAL_WORKER_ID` | `0` | Snowflake worker ID (0–1023), unique per process |
 | `--celebrity-threshold` | — | `100000` | Followers at or above this count are fanned out on read |
 | `--timeline-cap` | — | `800` | Post IDs kept per cached timeline |
 | `--cache-users` | — | `200000` | Max cached timelines (TinyLFU eviction) |
 | `--secure-cookies` | — | off | Add `Secure` to the session cookie (enable behind TLS) |
-| `--trust-proxy` | — | off | Use `X-Forwarded-For` for the client IP |
+| `--trust-proxy` | `SOCIAL_TRUST_PROXY` | off | Use `X-Forwarded-For` for the client IP |
 | `--no-rate-limit` | — | off | Disable per-IP limits (benchmarks, or limits enforced at the edge) |
 | `--log-json` | — | off | JSON logs |
 | `RUST_LOG` | env | `info` | Log filter |
@@ -287,6 +293,15 @@ Partition key at cluster scale: `author_id` / `follower` / `post_id` respectivel
 - The global timeline reads storage directly. At scale it becomes a cached, sampled
   stream.
 - Rate limits are per-node.
+- ScyllaDB backend:
+  - Multi-table writes (a follow, a like, a post plus its counters) are not atomic
+    across tables. A crash between statements can leave a counter off by one, or an
+    edge in one direction only. A reconciliation job is planned.
+  - The global timeline scans one `posts_by_day` partition per day, newest first.
+    Every post of a day lands in one partition, so this is a hot spot at very high
+    write rates.
+  - Expired sessions are removed by Scylla TTL, not by the purge task.
+
 - `--trust-proxy` trusts exactly one proxy hop (the last `X-Forwarded-For` entry).
   Behind two hops, such as CloudFront plus an ALB, that entry is the CDN edge's IP,
   not the client's. A configurable hop count is required before such deployments

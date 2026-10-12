@@ -1,6 +1,6 @@
 # 0002: Primary datastore: SQLite now, ScyllaDB from Phase 2
 
-- Status: Accepted. SQLite implemented; ScyllaDB planned for Phase 2.
+- Status: Accepted. SQLite and ScyllaDB implemented (`--store=sqlite|scylla`).
 - Date: 2026-10-12
 
 ## Context

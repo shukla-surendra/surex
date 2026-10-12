@@ -37,7 +37,7 @@ architecture does not change; only where it runs does.
 |---|---|---|
 | DNS | **Route 53** | Health checks; latency-based routing in Phase 4 |
 | TLS certificates | **ACM** | On CloudFront and the ALB |
-| CDN, static web | **CloudFront** + **S3** | `web/` assets with long cache TTL |
+| CDN, static web | **CloudFront** + **S3** | `frontend/dist` assets with long cache TTL |
 | L7 protection | **AWS WAF** + **Shield Standard** | Bot control and IP rate rules at the edge. App rate limits remain (SPEC §5) |
 | Load balancing | **ALB** | HTTP/2, WebSocket, `/healthz` target health checks |
 | App compute | **ECS on EC2** (Graviton `c8g`/`c7g`), capacity providers + Auto Scaling | One container image (`social`), one ECS service per role |

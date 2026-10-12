@@ -13,6 +13,7 @@ social-core.workspace = true
 social-events.workspace = true
 social-gateway.workspace = true
 social-services.workspace = true
+social-storage-scylla.workspace = true
 social-storage-sqlite.workspace = true
 tokio.workspace = true
 tracing.workspace = true

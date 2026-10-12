@@ -10,7 +10,7 @@ use axum::extract::{ConnectInfo, DefaultBodyLimit, FromRequest, FromRequestParts
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use error::ApiError;
@@ -26,7 +26,6 @@ use tower_http::compression::CompressionLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 
-const INDEX: &str = include_str!("../../../web/index.html");
 const SESSION_COOKIE: &str = "sid";
 const MAX_BODY: usize = 16 * 1024;
 
@@ -89,7 +88,6 @@ pub fn router(app: App, cfg: GatewayConfig) -> Router {
         .route("/users/{username}/follow", put(follow).delete(unfollow));
 
     Router::new()
-        .route("/", get(|| async { ([(header::CACHE_CONTROL, "no-cache")], Html(INDEX)) }))
         .route("/healthz", get(|| async { "ok" }))
         .nest("/api/v1", api)
         .fallback(|| async { ApiError(Error::NotFound("route")) })
